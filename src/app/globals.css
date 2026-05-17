@@ -1,26 +1,168 @@
 @import "tailwindcss";
 
+/* === DESIGN.md §2 — Color / Spacing / Radius 토큰 ===
+   색상은 반드시 이 CSS 변수로 참조한다. HEX 직접 사용 금지. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+  /* 다크 단일 모드 — 폼 컨트롤·스크롤바도 다크로 */
+  color-scheme: dark;
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  /* Accent — 화면에서 살아있는 것에만 */
+  --color-accent: #f2a33c;
+  --color-accent-hover: #f4b45e;
+  --color-accent-dim: #8a6230;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  /* Surfaces — 어두운 콘솔 층위 */
+  --color-bg: #0e0f12;
+  --color-surface: #17191d;
+  --color-surface-elevated: #212429;
+  --color-surface-inset: #0b0c0e;
+
+  /* Border */
+  --color-border: #2a2d33;
+  --color-border-strong: #3a3e45;
+
+  /* Text */
+  --color-text: #ecedef;
+  --color-text-secondary: #9aa0a8;
+  --color-text-muted: #5f646c;
+
+  /* Semantic */
+  --color-success: #5bbf8a;
+  --color-error: #d9685e;
+
+  /* Spacing scale (4px 기반) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-full: 999px;
+
+  /* Depth (DESIGN.md §6) */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 24px rgba(242, 163, 60, 0.35); /* 재생 중 버튼에만 */
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "Pretendard Variable", Pretendard, -apple-system, sans-serif;
+  /* 한글은 단어 단위로만 줄바꿈 (DESIGN.md §3) */
+  word-break: keep-all;
+}
+
+/* drum-room components (DESIGN.md section 4).
+   hover / active / pseudo-element cannot be inline styles, so they live here.
+   All colors reference CSS variables (no raw HEX). */
+
+/* drum volume slider: track 8px, thumb 24px */
+.drum-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 24px;
+  background: transparent;
+  cursor: pointer;
+}
+/* filled portion via background-size (no double-position var() gradient) */
+.drum-slider::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-surface-inset);
+  background-image: linear-gradient(
+    var(--color-accent),
+    var(--color-accent)
+  );
+  background-repeat: no-repeat;
+  background-size: var(--fill, 25%) 100%;
+}
+.drum-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  border: 3px solid var(--color-bg);
+  box-shadow: var(--shadow-md);
+  margin-top: -8px; /* (8 - 24) / 2: center thumb on 8px track */
+}
+.drum-slider:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}
+/* Firefox fallback (primary target is Chrome) */
+.drum-slider::-moz-range-track {
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-inset);
+}
+.drum-slider::-moz-range-progress {
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+.drum-slider::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--color-bg);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  box-shadow: var(--shadow-md);
+}
+
+/* primary action button (play/stop): round 64px, glow while playing */
+.action-btn {
+  width: 64px;
+  height: 64px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  color: var(--color-bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 150ms ease, transform 100ms ease, box-shadow 200ms ease;
+}
+.action-btn:hover {
+  background: var(--color-accent-hover);
+}
+.action-btn:active {
+  transform: scale(0.96);
+}
+.action-btn[data-playing="true"] {
+  box-shadow: var(--shadow-glow); /* only the single "now playing" state */
+}
+
+/* secondary buttons (presets): pill shape */
+.preset-btn {
+  background: var(--color-surface-elevated);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  padding: var(--space-2) var(--space-4);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+}
+.preset-btn:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+.preset-btn[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: rgba(242, 163, 60, 0.08); /* DESIGN.md section 4 explicit value */
 }
