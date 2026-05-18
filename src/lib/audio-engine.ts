@@ -56,7 +56,14 @@ class AudioEngine {
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext })
         .webkitAudioContext;
-    this.ctx = new Ctor();
+    // 분리 출력 버퍼는 44100Hz. 디바이스 기본 컨텍스트(보통 48000)로 재생하면
+    // Web Audio 가 리샘플 → ~8.8% 피치/템포 어긋남 + 트랜지언트(드럼 어택)
+    // 뭉개짐. 컨텍스트를 44100 으로 만들어 네이티브 재생(리샘플 제거).
+    try {
+      this.ctx = new Ctor({ sampleRate: 44100 });
+    } catch {
+      this.ctx = new Ctor();
+    }
     this.contextCreations += 1;
 
     this.masterGain = this.ctx.createGain();
@@ -106,6 +113,22 @@ class AudioEngine {
       this.loadPromise = null;
     });
     return this.loadPromise;
+  }
+
+  /** 분리 엔진이 만든 두 AudioBuffer 를 직접 주입 (4-C: fetch/decode 불필요). */
+  loadBuffers(drums: AudioBuffer, backing: AudioBuffer): void {
+    this.ensureContext();
+    if (this.playing) this.stop();
+    this.drumsBuffer = drums;
+    this.backingBuffer = backing;
+    this.loadKey = "buffers";
+    this.loadPromise = Promise.resolve();
+  }
+
+  /** 분리 결과 AudioBuffer 를 같은 컨텍스트에서 만들도록 컨텍스트 공유 (단일 AudioContext 유지). */
+  getContext(): AudioContext {
+    this.ensureContext();
+    return this.ctx!;
   }
 
   isLoaded(): boolean {
@@ -209,6 +232,7 @@ class AudioEngine {
       lastStartArgs: this.lastStartArgs,
     };
   }
+
 }
 
 let singleton: AudioEngine | null = null;

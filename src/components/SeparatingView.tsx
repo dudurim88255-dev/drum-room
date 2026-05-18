@@ -1,45 +1,101 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { loadModel, type ModelProgress } from "@/lib/model-cache";
+import { decodeAudioFile, separate } from "@/lib/separation-engine";
+import { getAudioEngine } from "@/lib/audio-engine";
 
-const TOTAL_SEGMENTS = 13;
-const DURATION_MS = 4000;
-const TICK_MS = 40; // 40ms마다 +1% → 약 4초에 100%
+// 분리 중 화면 (4-C: 진짜). 모델 1회 다운로드(진행률)+캐시 → 곡 분리
+// (Web Worker, 청크 N/M 진행률) → 결과 두 트랙을 재생 엔진에 주입.
+type UI = { headline: string; pct: number; detail: string };
 
-// 분리 중 화면. 2단계에서는 실제 분리 대신 가짜로 0→100% 진행시키고,
-// 다 차면 연습 화면으로 넘긴다. (실제 모델 다운로드·분리는 4단계)
-export default function SeparatingView({ onDone }: { onDone: () => void }) {
-  const [progress, setProgress] = useState(0);
-  // StrictMode 이중 실행·중복 onDone 호출 방지
+export default function SeparatingView({
+  file,
+  onDone,
+  onError,
+}: {
+  file: File;
+  onDone: () => void;
+  onError: (msg: string) => void;
+}) {
+  const [ui, setUi] = useState<UI>({
+    headline: "준비 중…",
+    pct: 0,
+    detail: "",
+  });
+  // StrictMode 이중 마운트 + 무거운 작업 → 1회만 실행.
+  // 주의: cleanup 에서 cancel 플래그를 세우는 패턴은 StrictMode 에서
+  // (setup→cleanup→setup) 1차 cleanup 이 유일한 async 를 죽인다. 그래서
+  // 취소 플래그를 두지 않고, 종료 콜백만 doneRef 로 1회 가드한다.
+  const startedRef = useRef(false);
   const doneRef = useRef(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 진행률만 올린다. setState 업데이터는 순수해야 하므로 여기서 onDone 호출 금지.
   useEffect(() => {
-    const step = 100 / (DURATION_MS / TICK_MS);
-    intervalRef.current = setInterval(() => {
-      setProgress((prev) => (prev + step >= 100 ? 100 : prev + step));
-    }, TICK_MS);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, []);
+    if (startedRef.current) return;
+    startedRef.current = true;
 
-  // 완료 감지·전환은 커밋 단계(effect)에서 — 렌더 중 부모 setState 금지 위반 방지
-  useEffect(() => {
-    if (progress >= 100 && !doneRef.current) {
+    (async () => {
+      const ab = await file.arrayBuffer();
+
+      // 0) 디코드 먼저 — 잘못된 파일이면 163MB 모델 받기 전에 빠르게 실패
+      setUi({ headline: "파일 읽는 중", pct: 0, detail: "" });
+      const pcm = await decodeAudioFile(ab);
+
+      // 1) 모델 (첫 방문 1회 다운로드 + 캐시, 이후 즉시)
+      const onModel = (p: ModelProgress) => {
+        if (p.phase === "download") {
+          setUi({
+            headline: "모델 다운로드 (첫 방문 1회)",
+            pct: Math.round((p.loaded / p.total) * 100),
+            detail: `${(p.loaded / 1048576).toFixed(0)} / ${(
+              p.total / 1048576
+            ).toFixed(0)} MB`,
+          });
+        } else if (p.phase === "verify" || p.phase === "cache") {
+          setUi({ headline: "모델 준비 중", pct: 100, detail: "무결성 검증" });
+        }
+      };
+      const { bytes } = await loadModel(onModel);
+
+      // 2) 분리 (Web Worker, 청크 진행률)
+      setUi({ headline: "드럼 분리 중", pct: 0, detail: "세그먼트 0/—" });
+      const engine = getAudioEngine();
+      const { drumsBuffer, backingBuffer } = await separate(pcm, bytes, {
+        audioContext: engine.getContext(), // 단일 컨텍스트 유지
+        onProgress: (chunk, totalChunks) => {
+          setUi({
+            headline: "드럼 분리 중",
+            pct: Math.round((chunk / totalChunks) * 100),
+            detail: `세그먼트 ${chunk}/${totalChunks}`,
+          });
+        },
+      });
+
+      // 3) 결과를 3단계 재생 엔진에 주입 → 연습 화면
+      engine.loadBuffers(drumsBuffer, backingBuffer);
+      if (!doneRef.current) {
+        doneRef.current = true;
+        onDone();
+      }
+    })().catch((e: unknown) => {
+      if (doneRef.current) return;
       doneRef.current = true;
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      onDone();
-    }
-  }, [progress, onDone]);
-
-  const pct = Math.round(progress);
-  const segment = Math.ceil((progress / 100) * TOTAL_SEGMENTS);
+      const msg = e instanceof Error ? e.message : String(e);
+      onError(
+        /decode|EncodingError|Unable to decode|Failed to|not be decoded/i.test(
+          msg,
+        )
+          ? "이 파일은 열 수 없습니다. 다른 음원(mp3/wav/flac/m4a)을 넣어 주세요."
+          : `분리 실패: ${msg}`,
+      );
+    });
+    // file 은 마운트 시 고정. onDone/onError 는 안정 참조(부모 useCallback).
+    // cleanup 없음(StrictMode 에서 async 를 죽이지 않기 위함).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div style={{ textAlign: "center" }}>
-      {/* 단계 안내 — H2 스케일 + 퍼센트 */}
       <h2
         style={{
           fontSize: "22px",
@@ -50,11 +106,10 @@ export default function SeparatingView({ onDone }: { onDone: () => void }) {
           margin: 0,
         }}
       >
-        드럼 분리 중...{" "}
-        <span style={{ fontVariantNumeric: "tabular-nums" }}>{pct}%</span>
+        {ui.headline}{" "}
+        <span style={{ fontVariantNumeric: "tabular-nums" }}>{ui.pct}%</span>
       </h2>
 
-      {/* 진행률 바 — DESIGN.md §4 */}
       <div
         style={{
           height: "6px",
@@ -67,7 +122,7 @@ export default function SeparatingView({ onDone }: { onDone: () => void }) {
         <div
           style={{
             height: "100%",
-            width: `${progress}%`,
+            width: `${ui.pct}%`,
             background: "var(--color-accent)",
             borderRadius: "var(--radius-full)",
             transition: "width 300ms ease",
@@ -75,7 +130,6 @@ export default function SeparatingView({ onDone }: { onDone: () => void }) {
         />
       </div>
 
-      {/* 보조 텍스트 — Body Small, text-secondary */}
       <p
         style={{
           fontSize: "14px",
@@ -85,10 +139,9 @@ export default function SeparatingView({ onDone }: { onDone: () => void }) {
           fontVariantNumeric: "tabular-nums",
         }}
       >
-        세그먼트 {segment}/{TOTAL_SEGMENTS}
+        {ui.detail}
       </p>
 
-      {/* 최초 1회 모델 다운로드 안내 — 실제 다운로드는 4단계, 지금은 문구만 */}
       <p
         style={{
           fontSize: "14px",
@@ -97,7 +150,7 @@ export default function SeparatingView({ onDone }: { onDone: () => void }) {
           margin: "var(--space-6) 0 0",
         }}
       >
-        최초 1회: 모델 다운로드 81MB
+        분리는 곡 길이에 따라 시간이 걸립니다. 화면을 닫지 마세요.
       </p>
     </div>
   );

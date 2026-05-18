@@ -1,29 +1,49 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useState, useSyncExternalStore } from "react";
 import UploadView from "@/components/UploadView";
 import SeparatingView from "@/components/SeparatingView";
 import PracticeView from "@/components/PracticeView";
+import { checkSupport } from "@/lib/env-support";
 
-// 단일 페이지 + 세 화면을 하나의 stage 값으로 전환.
-// 2단계는 "움직이는 와이어프레임" — 보고 만질 수 있지만 소리는 없다.
+// 단일 페이지 + 세 화면을 stage 로 전환. 4-C: 실제 곡 분리 → 연습.
 type Stage = "upload" | "separating" | "practice";
+
+// 클라이언트 전용 능력 감지를 하이드레이션 안전하게(서버=null → "checking").
+const noopSubscribe = () => () => {};
+let supportCache: boolean | null = null;
+function getSupportSnapshot(): boolean {
+  if (supportCache === null) supportCache = checkSupport().ok;
+  return supportCache;
+}
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("upload");
-  // 고른 파일 — 2단계에선 제목 표시만, 실제 사용은 3·4단계
   const [file, setFile] = useState<File | null>(null);
   const [drumVolume, setDrumVolume] = useState(25);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [sepError, setSepError] = useState<string | null>(null);
+  // null = 서버/하이드레이션 시점("checking"), 이후 클라이언트에서 boolean
+  const supported = useSyncExternalStore(
+    noopSubscribe,
+    getSupportSnapshot,
+    () => null as boolean | null,
+  );
 
   const handleFileSelected = useCallback((picked: File) => {
+    setSepError(null);
     setFile(picked);
     setStage("separating");
   }, []);
 
-  // SeparatingView가 100% 도달 시 호출 (useEffect deps라 안정 참조 필요)
   const handleSeparationDone = useCallback(() => {
     setStage("practice");
+  }, []);
+
+  const handleSeparationError = useCallback((msg: string) => {
+    setSepError(msg);
+    setFile(null);
+    setStage("upload");
   }, []);
 
   return (
@@ -33,13 +53,11 @@ export default function Home() {
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        // 콘솔 카드는 세로 중앙보다 살짝 위 (DESIGN.md §5)
         justifyContent: "center",
         padding: "var(--space-12) var(--space-4)",
         gap: "var(--space-8)",
       }}
     >
-      {/* 상단 라벨 — Caption, text-muted */}
       <span
         style={{
           fontSize: "13px",
@@ -51,7 +69,6 @@ export default function Home() {
         DRUM-ROOM
       </span>
 
-      {/* 콘솔 카드 — 세 화면의 내용물이 이 안에서 교체된다 */}
       <div
         style={{
           width: "100%",
@@ -63,20 +80,70 @@ export default function Home() {
           padding: "var(--space-8)",
         }}
       >
-        {stage === "upload" && (
-          <UploadView onFileSelected={handleFileSelected} />
-        )}
-        {stage === "separating" && (
-          <SeparatingView onDone={handleSeparationDone} />
-        )}
-        {stage === "practice" && (
-          <PracticeView
-            fileName={file?.name ?? null}
-            drumVolume={drumVolume}
-            setDrumVolume={setDrumVolume}
-            isPlaying={isPlaying}
-            setIsPlaying={setIsPlaying}
-          />
+        {supported === false ? (
+          <div style={{ textAlign: "center" }}>
+            <h2
+              style={{
+                fontSize: "22px",
+                fontWeight: 600,
+                lineHeight: 1.35,
+                letterSpacing: "-0.01em",
+                color: "var(--color-text)",
+                margin: 0,
+              }}
+            >
+              드럼룸은 데스크톱 크롬에 맞춰져 있습니다
+            </h2>
+            <p
+              style={{
+                fontSize: "16px",
+                lineHeight: 1.7,
+                color: "var(--color-text-secondary)",
+                margin: "var(--space-4) 0 0",
+              }}
+            >
+              브라우저 안에서 곡을 분리하려면 데스크톱 Chrome 으로 열어 주세요.
+              (모바일·일부 브라우저는 1차 지원 범위 밖입니다.)
+            </p>
+          </div>
+        ) : supported === null ? (
+          <div
+            style={{
+              minHeight: "120px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "var(--color-text-muted)",
+              fontSize: "14px",
+            }}
+          >
+            …
+          </div>
+        ) : (
+          <>
+            {stage === "upload" && (
+              <UploadView
+                onFileSelected={handleFileSelected}
+                error={sepError}
+              />
+            )}
+            {stage === "separating" && file && (
+              <SeparatingView
+                file={file}
+                onDone={handleSeparationDone}
+                onError={handleSeparationError}
+              />
+            )}
+            {stage === "practice" && (
+              <PracticeView
+                fileName={file?.name ?? null}
+                drumVolume={drumVolume}
+                setDrumVolume={setDrumVolume}
+                isPlaying={isPlaying}
+                setIsPlaying={setIsPlaying}
+              />
+            )}
+          </>
         )}
       </div>
     </main>

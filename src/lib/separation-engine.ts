@@ -103,9 +103,7 @@ const TARGET_SR = 44100;
  * → OfflineAudioContext(44100) 로 디코드해 항상 정확히 44100 PCM 을 얻는다.
  * 임의 SR 의 사용자 곡도 브라우저가 44100 으로 리샘플해준다.
  */
-async function decodeAt44100(
-  file: ArrayBuffer,
-): Promise<{ left: Float32Array; right: Float32Array }> {
+export async function decodeAudioFile(file: ArrayBuffer): Promise<Pcm> {
   const OAC: typeof OfflineAudioContext =
     window.OfflineAudioContext ||
     (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext })
@@ -117,7 +115,7 @@ async function decodeAt44100(
     decoded.numberOfChannels > 1
       ? new Float32Array(decoded.getChannelData(1))
       : left;
-  return { left, right };
+  return { left, right, sampleRate: TARGET_SR };
 }
 
 /** File/ArrayBuffer → 정확히 44100Hz 디코드 → separate. */
@@ -129,10 +127,9 @@ export async function separateFile(
     audioContext?: AudioContext;
   } = {},
 ): Promise<SeparationResult> {
-  const { left, right } = await decodeAt44100(file);
-  return separate(
-    { left, right, sampleRate: TARGET_SR },
-    modelBytes,
-    { onProgress: opts.onProgress, audioContext: opts.audioContext },
-  );
+  const pcm = await decodeAudioFile(file);
+  return separate(pcm, modelBytes, {
+    onProgress: opts.onProgress,
+    audioContext: opts.audioContext,
+  });
 }

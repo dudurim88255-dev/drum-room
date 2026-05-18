@@ -6,8 +6,10 @@ import { useRef, useState } from "react";
 // 받으면 다음 단계로 넘긴다. (파일 객체는 page 상태에 저장 — 3·4단계에서 사용)
 export default function UploadView({
   onFileSelected,
+  error,
 }: {
   onFileSelected: (file: File) => void;
+  error?: string | null;
 }) {
   const [isDragOver, setIsDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -25,10 +27,25 @@ export default function UploadView({
   }
 
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={openPicker}
+    <div>
+      {error && (
+        <p
+          role="alert"
+          style={{
+            fontSize: "14px",
+            lineHeight: 1.6,
+            color: "var(--color-error)",
+            margin: "0 0 var(--space-4)",
+            textAlign: "center",
+          }}
+        >
+          {error}
+        </p>
+      )}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={openPicker}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") openPicker();
       }}
@@ -99,6 +116,7 @@ export default function UploadView({
       >
         파일은 브라우저 밖으로 안 나갑니다
       </p>
+      </div>
     </div>
   );
 }

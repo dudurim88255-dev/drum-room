@@ -1,13 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
 import { getAudioEngine } from "@/lib/audio-engine";
 
-// 1차의 메인 화면. 3단계에서 실제 Web Audio 재생/게인을 연결한다.
-// 3단계 동안 연습 화면은 항상 test-audio 두 트랙으로 동작 (4단계에서 분리 결과로 교체).
-const DRUMS_URL = "/test-audio/drums.wav";
-const BACKING_URL = "/test-audio/backing.wav";
-
+// 1차의 메인 화면. 4-C: 분리 엔진이 만든 두 트랙이 이미 재생 엔진에
+// 주입돼 있다(SeparatingView 가 engine.loadBuffers 후 전환). 여기선 재생/
+// 드럼 볼륨/프리셋만 — 3단계에서 검증된 로직 그대로, 입력 소스만 분리 결과.
 const PRESETS = [
   { label: "드럼없이", value: 0 },
   { label: "가이드", value: 25 },
@@ -15,6 +13,7 @@ const PRESETS = [
 ] as const;
 
 export default function PracticeView({
+  fileName,
   drumVolume,
   setDrumVolume,
   isPlaying,
@@ -26,40 +25,19 @@ export default function PracticeView({
   isPlaying: boolean;
   setIsPlaying: (v: boolean) => void;
 }) {
-  const [ready, setReady] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  // 슬라이더 조작을 audio 노드에 직접 반영하기 위해 엔진을 ref로 잡아둔다
-  // (React 상태 갱신과 게인 적용을 분리 — task §4)
   const engineRef = useRef(getAudioEngine());
 
   useEffect(() => {
     const engine = engineRef.current;
-    let cancelled = false;
-
-    // 초기 드럼 게인을 현재 슬라이더 값과 맞춤
     engine.setDrumVolume(drumVolume / 100);
     // 트랙이 끝까지 가면 자동 정지 → 버튼도 정지 상태로
     engine.setOnEnded(() => setIsPlaying(false));
-    // 헤드리스 검증용 핸들 (1차 내부 도구)
-    (window as unknown as { __drumRoomEngine?: unknown }).__drumRoomEngine =
-      engine;
-
-    engine
-      .load(DRUMS_URL, BACKING_URL)
-      .then(() => {
-        if (!cancelled) setReady(true);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
-      });
-
     return () => {
-      cancelled = true;
       engine.setOnEnded(null);
       engine.stop();
       setIsPlaying(false);
     };
-    // 마운트 시 1회만 (drumVolume 초기값 기준). 이후 변경은 핸들러가 직접 반영.
+    // 마운트 1회 (drumVolume 초기값). 이후 변경은 핸들러가 직접 반영.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -90,7 +68,7 @@ export default function PracticeView({
         gap: "var(--space-8)",
       }}
     >
-      {/* 곡 제목 — H2 스케일. 3단계 테스트 중에는 "테스트 음원" */}
+      {/* 곡 제목 — H2 스케일. 사용자가 넣은 파일명 */}
       <div style={{ textAlign: "center" }}>
         <h2
           style={{
@@ -100,9 +78,10 @@ export default function PracticeView({
             letterSpacing: "-0.01em",
             color: "var(--color-text)",
             margin: 0,
+            wordBreak: "break-all",
           }}
         >
-          테스트 음원
+          {fileName ?? "연습 곡"}
         </h2>
         <p
           style={{
@@ -113,22 +92,16 @@ export default function PracticeView({
             margin: "var(--space-2) 0 0",
           }}
         >
-          {loadError
-            ? `로드 실패: ${loadError}`
-            : ready
-              ? "drums.wav + backing.wav"
-              : "트랙 로딩 중…"}
+          드럼 분리 완료 — 드럼 볼륨을 조절하며 그 위에 치세요
         </p>
       </div>
 
-      {/* 재생 / 정지 — 원형 64px, 재생 중 글로우. 로딩 전 비활성 */}
+      {/* 재생 / 정지 — 원형 64px, 재생 중 글로우 */}
       <button
         type="button"
         className="action-btn"
         data-playing={isPlaying}
         aria-label={isPlaying ? "정지" : "재생"}
-        disabled={!ready}
-        style={!ready ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
         onClick={togglePlay}
       >
         {isPlaying ? <StopIcon /> : <PlayIcon />}
