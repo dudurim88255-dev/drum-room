@@ -1,9 +1,13 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { getAudioEngine } from "@/lib/audio-engine";
 
-// 1차의 메인 화면. 2단계에서는 소리 없이 모양·클릭 반응만.
-// 실제 Web Audio 재생·게인 연결은 3단계.
+// 1차의 메인 화면. 3단계에서 실제 Web Audio 재생/게인을 연결한다.
+// 3단계 동안 연습 화면은 항상 test-audio 두 트랙으로 동작 (4단계에서 분리 결과로 교체).
+const DRUMS_URL = "/test-audio/drums.wav";
+const BACKING_URL = "/test-audio/backing.wav";
+
 const PRESETS = [
   { label: "드럼없이", value: 0 },
   { label: "가이드", value: 25 },
@@ -11,7 +15,6 @@ const PRESETS = [
 ] as const;
 
 export default function PracticeView({
-  fileName,
   drumVolume,
   setDrumVolume,
   isPlaying,
@@ -23,7 +26,60 @@ export default function PracticeView({
   isPlaying: boolean;
   setIsPlaying: (v: boolean) => void;
 }) {
-  const title = fileName ?? "연습 곡";
+  const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // 슬라이더 조작을 audio 노드에 직접 반영하기 위해 엔진을 ref로 잡아둔다
+  // (React 상태 갱신과 게인 적용을 분리 — task §4)
+  const engineRef = useRef(getAudioEngine());
+
+  useEffect(() => {
+    const engine = engineRef.current;
+    let cancelled = false;
+
+    // 초기 드럼 게인을 현재 슬라이더 값과 맞춤
+    engine.setDrumVolume(drumVolume / 100);
+    // 트랙이 끝까지 가면 자동 정지 → 버튼도 정지 상태로
+    engine.setOnEnded(() => setIsPlaying(false));
+    // 헤드리스 검증용 핸들 (1차 내부 도구)
+    (window as unknown as { __drumRoomEngine?: unknown }).__drumRoomEngine =
+      engine;
+
+    engine
+      .load(DRUMS_URL, BACKING_URL)
+      .then(() => {
+        if (!cancelled) setReady(true);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
+      });
+
+    return () => {
+      cancelled = true;
+      engine.setOnEnded(null);
+      engine.stop();
+      setIsPlaying(false);
+    };
+    // 마운트 시 1회만 (drumVolume 초기값 기준). 이후 변경은 핸들러가 직접 반영.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function togglePlay() {
+    const engine = engineRef.current;
+    if (engine.isPlaying) {
+      engine.stop();
+      setIsPlaying(false);
+    } else {
+      await engine.play();
+      setIsPlaying(engine.isPlaying);
+    }
+  }
+
+  // 슬라이더/프리셋: React 상태(표시·선택)와 audio 게인을 함께 갱신.
+  // 게인은 엔진에 직접(틱 잡음 방지 스무딩은 엔진 내부에서 처리).
+  function applyVolume(v: number) {
+    setDrumVolume(v);
+    engineRef.current.setDrumVolume(v / 100);
+  }
 
   return (
     <div
@@ -31,33 +87,49 @@ export default function PracticeView({
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
-        // 컨트롤 사이 간격 최소 --space-6 (DESIGN.md §5)
         gap: "var(--space-8)",
       }}
     >
-      {/* 곡 제목 — H2 스케일 */}
-      <h2
-        style={{
-          fontSize: "22px",
-          fontWeight: 600,
-          lineHeight: 1.35,
-          letterSpacing: "-0.01em",
-          color: "var(--color-text)",
-          margin: 0,
-          textAlign: "center",
-          wordBreak: "break-all", // 긴 파일명도 카드 안에서 끊기게
-        }}
-      >
-        {title}
-      </h2>
+      {/* 곡 제목 — H2 스케일. 3단계 테스트 중에는 "테스트 음원" */}
+      <div style={{ textAlign: "center" }}>
+        <h2
+          style={{
+            fontSize: "22px",
+            fontWeight: 600,
+            lineHeight: 1.35,
+            letterSpacing: "-0.01em",
+            color: "var(--color-text)",
+            margin: 0,
+          }}
+        >
+          테스트 음원
+        </h2>
+        <p
+          style={{
+            fontSize: "13px",
+            fontWeight: 500,
+            letterSpacing: "0.02em",
+            color: "var(--color-text-muted)",
+            margin: "var(--space-2) 0 0",
+          }}
+        >
+          {loadError
+            ? `로드 실패: ${loadError}`
+            : ready
+              ? "drums.wav + backing.wav"
+              : "트랙 로딩 중…"}
+        </p>
+      </div>
 
-      {/* 재생 / 정지 — 원형 64px, 재생 중 글로우 */}
+      {/* 재생 / 정지 — 원형 64px, 재생 중 글로우. 로딩 전 비활성 */}
       <button
         type="button"
         className="action-btn"
         data-playing={isPlaying}
         aria-label={isPlaying ? "정지" : "재생"}
-        onClick={() => setIsPlaying(!isPlaying)}
+        disabled={!ready}
+        style={!ready ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+        onClick={togglePlay}
       >
         {isPlaying ? <StopIcon /> : <PlayIcon />}
       </button>
@@ -72,7 +144,6 @@ export default function PracticeView({
             marginBottom: "var(--space-3)",
           }}
         >
-          {/* 라벨 — Caption */}
           <span
             style={{
               fontSize: "13px",
@@ -83,7 +154,6 @@ export default function PracticeView({
           >
             드럼 볼륨
           </span>
-          {/* 현재 % — Numeric Display, tabular-nums */}
           <span
             style={{
               fontSize: "28px",
@@ -103,13 +173,12 @@ export default function PracticeView({
           max={100}
           value={drumVolume}
           aria-label="드럼 볼륨"
-          onChange={(e) => setDrumVolume(Number(e.target.value))}
-          // 채워진 부분 표현용 — pseudo-element track 그라디언트가 참조
+          onChange={(e) => applyVolume(Number(e.target.value))}
           style={{ ["--fill"]: `${drumVolume}%` } as CSSProperties}
         />
       </div>
 
-      {/* 프리셋 3버튼 — 누르면 슬라이더 점프, 일치 시 선택됨 */}
+      {/* 프리셋 3버튼 — 슬라이더값과 게인을 함께 바꾼다 */}
       <div style={{ display: "flex", gap: "var(--space-3)" }}>
         {PRESETS.map((p) => (
           <button
@@ -117,7 +186,7 @@ export default function PracticeView({
             type="button"
             className="preset-btn"
             aria-pressed={drumVolume === p.value}
-            onClick={() => setDrumVolume(p.value)}
+            onClick={() => applyVolume(p.value)}
           >
             {p.label}
           </button>
