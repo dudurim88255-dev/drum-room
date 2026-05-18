@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 4-A 분리 모델 확보 작업 폴더 (앱 레포 오염 방지)
+model-prep/
