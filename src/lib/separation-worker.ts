@@ -3,6 +3,7 @@
 // 여기서 수행하고, 청크 진행률을 메인으로 보고한다.
 import * as ort from "onnxruntime-web";
 import { buildSpec, SEG } from "./stft";
+import { spectralWaveform } from "./istft";
 
 // 단일 스레드 WASM (COOP/COEP 불필요 — 1차 안정성 우선).
 ort.env.wasm.numThreads = 1;
@@ -93,23 +94,31 @@ self.onmessage = async (e: MessageEvent<InMsg>) => {
         [inSpec]: new ort.Tensor("float32", spec, [1, 2, 2048, 431, 2]),
       };
       const out = await session.run(feeds);
-      // add_77: [1,4,2,SEG] (0=drums,1=bass,2=other,3=vocals)
+      // HTDemucs 하이브리드: 최종 소스 = 시간분기 add_77(xt) +
+      // ISTFT(스펙트럼분기 add_76). ONNX 는 둘을 raw 로만 내보내므로
+      // host 가 add_76 을 _ispec 해 add_77 에 가산해야 한다(절반만 쓰면
+      // 각 소스 ~30% 손실 → 분리 뭉개짐). 둘 다 [1,4,2,SEG] / cac.
       const w =
         (out["add_77"] as ort.Tensor | undefined) ??
         (out[session.outputNames[1]] as ort.Tensor);
       const y = w.data as Float32Array;
+      const sw =
+        (out["add_76"] as ort.Tensor | undefined) ??
+        (out[session.outputNames[0]] as ort.Tensor);
+      // xspec layout 은 add_77 과 동일 ((src*2+ch)*SEG + i) → 그대로 가산
+      const xspec = spectralWaveform(sw.data as Float32Array);
       const SRC = SEG; // 채널당 샘플 수
       // 인덱스: ((src*2 + ch)*SEG + i)
       for (let i = 0; i < len; i++) {
         const t = s + i;
         const ww = WIN[i];
-        const d0L = y[(0 * 2 + 0) * SRC + i];
-        const d0R = y[(0 * 2 + 1) * SRC + i];
+        const d0L = y[(0 * 2 + 0) * SRC + i] + xspec[(0 * 2 + 0) * SRC + i];
+        const d0R = y[(0 * 2 + 1) * SRC + i] + xspec[(0 * 2 + 1) * SRC + i];
         let bl = 0;
         let br = 0;
         for (let src = 1; src < 4; src++) {
-          bl += y[(src * 2 + 0) * SRC + i];
-          br += y[(src * 2 + 1) * SRC + i];
+          bl += y[(src * 2 + 0) * SRC + i] + xspec[(src * 2 + 0) * SRC + i];
+          br += y[(src * 2 + 1) * SRC + i] + xspec[(src * 2 + 1) * SRC + i];
         }
         dL[t] += d0L * ww;
         dR[t] += d0R * ww;

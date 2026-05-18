@@ -3,13 +3,128 @@
 > 세션 시작 시 이 파일을 먼저 읽는다. "미검증 가정" 항목은 코드 작업 전 검증한다.
 
 ## 현 단계
-- **4-B(분리 엔진) 완료 — 현 시점 best baseline.** STFT 게이트 통과 + 브라우저
-  onnxruntime-web 파이프라인이 Python ground truth 와 일치(검증 13/13 PASS).
-  앱 UI 연결(4-C) 미착수. 실제 곡 분리 청취는 4-C 에서 사용자 확인.
-- 4-A: htdemucs_optimized.onnx 확보·검증 완료(model-prep, gitignore).
-- 3단계 재생 엔진 완결(23/23). 음원 교체에 엔진 코드 변경 0.
+- **drum-room 1차 — 4-D 스펙트럼 분기 복원: Phase B 구현·검증 완료(미커밋).**
+  사용자 A/B 청취 승인 → `src/lib/istft.ts`(신규, demucs `_ispec`+`_mask`
+  cac 의 torch-정확 이식) + `separation-worker.ts`(add_76 ISTFT 가산) 적용.
+  3중 게이트 PASS: ①istft.ts==torch `_ispec` cos 1.0 ②풀곡 worker==사용자
+  승인 B_*.wav cos~1 ③재구성 cos 0.997/잔차 9.4%(망가진 A 0.955/29.8% 해결).
+  tsc/eslint 0. **커밋 대기 = 사용자가 실제 앱에서 슬라이더 동작 청취 확인 후.**
+- ⚠ 이전 "코드/배선/분리/버퍼매핑 버그 없음" 결론은 **반증**됐었고, root
+  cause(하이브리드 절반만 사용)는 4-D 로 해결됨(아래 [버그조사]·4-D 참조).
+
+## [버그조사] "연습 화면 드럼 슬라이더가 오디오에 안 먹는다" (실제 곡)
+사용자 보고: 실제 곡("타오르는 밤의 끝") 분리·재생 정상, 그러나 드럼 볼륨
+슬라이더/프리셋이 소리에 전혀 안 먹힘. → 사슬을 런타임 증거로 한 칸씩 추적:
+- 슬라이더/프리셋 → `applyVolume` → `engine.setDrumVolume` 호출 **정상**
+  (런타임: drumGainValue 0.25→0(슬라이더0)→0(드럼없이)→1(원곡)→0.6 추적).
+- `play()` 가 `drumsSource.connect(drumGain)` — drums 가 drumGain 경유 **정상**.
+- 실제 곡 분리(40s) 측정: drums(s0) rms 0.070 / backing(1+2+3) 0.112
+  (**−4dB**, drums 또렷), **cos(drums,backing)=0.037**(backing에 드럼 없음·
+  누수/뒤바뀜 아님), cos(backing,mix)=0.81(≠1 → 드럼 실제 제거됨),
+  cos(sum4,mix)=0.95(소스합≈입력 sane). 엔진에 들어가는 두 버퍼도 정상.
+- **실제 곡·실제 앱 흐름** 출력 탭 측정: drum 100%→0% 시 출력 RMS **−19.9%**,
+  피크 0.21→0.10(**−51%**). → 슬라이더가 실제 오디오 출력을 분명히 바꿈.
+- ~~결론: 코드/배선/분리/버퍼매핑 버그 없음~~ **← 반증됨.** 분해 슬라이싱
+  자체는 정확(backing==src1+2+3 정확, sum4≈mix)하나, **모델 출력 자체가
+  불완전**했음. diag-stems 6개 저장 후 사용자 청취 → "drums/backing 비슷".
+- **[확정 ROOT CAUSE] worker 가 HTDemucs 하이브리드의 시간분기(`add_77`)만
+  쓰고 스펙트럼분기(`add_76` [1,4,4,2048,431], cac 복소 스펙) 를 버림.**
+  HTDemucs 최종 소스 = `xt`(add_77) + `iSTFT(mask·spec)`(add_76). 증거(모두
+  재현 가능, `model-prep/diag_stems_check.py`·`cmp_recon.py`):
+  - diag-stems == `add_77`-only 출력 정확 일치(cos 1.000000, rmsΔ 4e-5)
+    → 사용자가 들은 것 = 현 코드 출력.
+  - 재구성: A(add_77만) cos(drums+backing,mix)=0.955 잔차 29.8%; 
+    B(add_77+ISTFT add_76) cos=**0.997** 잔차 9.4%. → 현 코드가 각 소스
+    ~30%(스펙트럼분기) 손실. drums=mix−backing: A 0.863 → B 0.982.
+  - 보컬 소스 RMS 0.010(붕괴)·other로 드럼 누수 → 드러머 귀 "둘 다 드럼".
+  - 4-B cos 0.99999 통과한 이유: Python ref(`gt/add77_ref.npy`)도
+    `add_77`-only → 양쪽이 같은 결함 공유, 사각지대(rc#4와 동형).
+  - reference: `model-prep/gt_fullrecon.py` 가 정답(B) `_ispec` 구현 보유
+    (demucs ispectro/_ispec/cac 재현). `gt-fullrecon/{A_add77only,
+    B_xt_plus_istft}_{drums,backing}.wav` 40s 비교본 존재.
+- **해결: 4-D 에서 worker 에 add_76 ISTFT 분기 이식 완료**(아래 4-D).
+  4-C(separation-worker.ts 미수정)와 독립 — 4-B 부터의 결함이었음.
+- 동반 처리(우회 아님, 정당 개선): 분리 버퍼는 44100, 디바이스 컨텍스트는
+  보통 48000 → 재생 시 리샘플 단계. AudioContext 를 `{sampleRate:44100}` 로
+  생성(분리 출력과 일치, 리샘플 제거 → 드럼 트랜지언트 더 또렷).
+  ※ 정정: 웹오디오는 리샘플 시 피치 보존 → "8.8% 피치오류"는 과장이었음.
+  품질 소폭 개선이지 슬라이더 무동작 원인 아님.
+- 임시 진단코드(debug 메서드/analyser 탭/__dbgEngine/`/diag`/separateDebug)
+  전부 제거, grep 0, tsc·eslint 0. 제품 = 깨끗한 4-C + SR 개선.
+- 정리·SR개선 후 **전체 흐름 재검증 15/15 PASS**(능력게이트→업로드→모델
+  다운로드(req=1)→분리→연습→재생/글로우/슬라이더/프리셋→Cache저장→
+  재방문 재다운로드0→잘못된파일 빠른실패→콘솔0). 제품 무결성 확인.
+- **상태: 4-C 미커밋.** 사용자 지시대로 "사용자가 스템 청취로 슬라이더/
+  분리품질 확인 후" 커밋. 스템: `model-prep/diag-stems/*.wav`(gitignore).
+- 다음 판단(사용자 청취 결과에 따라): 분리품질이 부족하면 2차에서 모델/
+  후처리 개선(htdemucs_ft, 더 큰 overlap, 심벌 누수 보정 등) 검토.
+
+## 4-D — 스펙트럼 분기(add_76) 복원 (2026-05-18, Phase B 구현·검증 완료)
+- **사용자 A/B 청취 승인**: B_drums 가 A 보다 또렷, A/B backing 둘 다 드럼
+  없이 반주만(B 가 스펙트럼분기 복원으로 약간 큼 — 정상). → B 수정 승인.
+- 신규 `src/lib/istft.ts`: demucs `htdemucs._mask`(cac) + `_ispec` +
+  `spec.py:ispectro`(torch.istft normalized=True/center) 를 stft.ts 의
+  1/√NFFT 규약과 짝맞춰 **torch-정확 이식**. 발명 아님 — 검증된 reference
+  (`gt_fullrecon.py` B 경로 = 원본 demucs) 그대로. export `spectralWaveform
+  (add_76)` → [(src*2+ch)*SEG+i] (add_77 동일 layout, 그대로 가산).
+- `separation-worker.ts`: 모델 출력에서 `add_76` 도 받아 `spectralWaveform`
+  → 청크별 add_77 에 가산한 뒤 **기존 OLA/매핑(drums=src0, backing=
+  src1+2+3, sin² WIN) 그대로**. OLA·매핑 코드 무수정. 모델 forward 내부에
+  정규화 포함 → worker 정규화 추가 불필요(순수 스펙트럼분기 누락만 수정).
+- 추적·수정한 결함(우회 아님): 초기 게이트 cos 0.99999(가장자리 국소 오차).
+  원인 = torch.istft 는 `_ispec` 의 F.pad((2,2)) 로 늘어난 **전체 435프레임
+  (제로프레임 포함)에 window-envelope(Σw²) 누적**하는데 제로프레임을
+  skip 해 분모가 가장자리에서 어긋남. → ENV 를 전체 435프레임 기준 1회
+  사전계산(torch 정확 등가). 재게이트 cos 1.00000000.
+- **검증 3중 게이트(전부 PASS, 재현 스크립트 = gitignore model-prep)**:
+  1. 단위: `gt_istft_gate.py`(torch `_ispec` ground truth, chunk0·1) vs
+     `istft_gate.mjs`(실 istft.ts 컴파일 import) → xspec/full **cos
+     1.00000000, maxAbs ~1e-7**(4-B STFT 게이트와 동급 float 라운드오프).
+  2. 통합: `gt_dump_allchunks.py`(풀곡 6청크 add_76/77) + `worker_ola_
+     gate.mjs`(실 istft.ts + worker OLA 1:1 재현) → 사용자 승인
+     `gt-fullrecon/B_*.wav` 대비 drums cos 0.9999999 / backing 1.0000000
+     (RMS 정확 일치).
+  3. 재구성: drums+backing vs mix cos **0.997**, 잔차 **9.44%**
+     (망가진 A 0.955/29.8% 대비 해결, B 목표 달성).
+- `tsc --noEmit` 0, `eslint src/` 0. worker/istft 콘솔 0. git 신규 변경 =
+  `separation-worker.ts`(M) + `istft.ts`(신규)뿐, 4-C 세트 그대로.
+- ⚠ **커밋 보류**: 사용자가 실제 앱(곡 넣기→분리→연습→슬라이더)에서
+  드럼 슬라이더 체감·음질을 직접 확인한 뒤 커밋(사용자 지시). 헤드리스로
+  실제 청취/슬라이더 체감은 검증 불가 — 수치·파형은 B 와 동일 입증됨.
+- 잔재: `model-prep/_gatebuild/`(istft.ts 컴파일본, 게이트 tsc 로 재생성),
+  `gt-istft/`·`gt-allchunks/`(npy ground truth). 전부 gitignore.
+
+## 4-C — 분리 엔진 앱 연결 (2026-05-18, 구현 완료 / 검증 진행 중)
+- 모델 호스팅: **외부 fetch + Cache API**(사용자 승인). `src/lib/model-cache.ts`:
+  gianlourbano/demucs-onnx Git LFS(CORS '*' 확인)에서 1회 다운로드(진행률)
+  → sha256 `bacfac8a…` 검증 → Cache `drum-room-model-v1` 저장, 2회차 즉시.
+- `audio-engine.ts`: `loadBuffers(drums,backing)` + `getContext()` 추가
+  (분리 결과 직접 주입, 단일 AudioContext 유지).
+- `SeparatingView`: 디코드 먼저(빠른 실패) → 모델(진행률) → `separate`(Worker,
+  세그먼트 N/M) → `engine.loadBuffers` → 연습. 에러 시 onError→업로드 복귀+안내.
+- `PracticeView`: test-audio fetch·`__drumRoomEngine` 디버그 핸들 **제거**.
+  분리된 두 트랙(엔진 선주입)으로 재생/볼륨/프리셋, 제목=파일명.
+- `page.tsx`: 실제 흐름 + 분리 실패 표시(UploadView `error`) + **능력 게이트**
+  (`env-support.ts`: 모바일/AudioContext/OfflineAudioContext/Worker/WASM/
+  caches/crypto.subtle 미지원 → DESIGN §8 안내). `useSyncExternalStore`로
+  하이드레이션 안전.
+- 검증 잔재 제거: `src/app/sep-test/` 삭제, 디버그 핸들 제거(grep 0건).
+- wasmPaths 는 jsDelivr CDN 유지(1차; 자가 호스팅은 2차 선택).
+- `tsc --noEmit` 0, `eslint src/` 0. `separate(pcm)`로 디코드/모델/분리 분리.
+- ⚠ 4-C 중 발견·수정한 버그: **SeparatingView StrictMode 가드 결함**
+  (dev StrictMode setup→cleanup→setup 시 1차 cleanup 이 `cancelled=true` 로
+  유일 async 를 죽여 "파일 읽는 중"에서 영구 정지). 진단으로 root-cause →
+  `cancelled`/cleanup 제거 + `doneRef` 1회 가드로 수정.
+- **검증 16/16 PASS**(`flow_verify`): 사이클1 첫방문(req=1)→연습, 재생토글·
+  글로우·슬라이더0%·프리셋, Cache 저장, 사이클2 재방문 재다운로드 0(req=0),
+  사이클3 잘못된 파일 안내+업로드복귀+모델 미수신(req=0), 콘솔 0.
+  첫 방문 ~3.5분(모델 35s + 19.2s곡 3청크 ~2.5분, 단일스레드 WASM).
+- 성능 현실: WASM 단일스레드 ~50–65s/10초청크 → 3분 곡 ≈ 18청크 ≈ 20분.
+  1차 허용(기능 정상). 가속(WebGPU/멀티스레드)은 2차 후보.
+- 잔재 제거 완료: `src/app/sep-test/` 삭제, `__drumRoomEngine` 제거(grep 0).
 
 ## 마지막 커밋 (master)
+- `a346973` feat: 4-B - 분리 엔진 (htdemucs ONNX, STFT, Web Worker)
 - `6fe1c76` feat: 3단계 - 재생 엔진 (드럼/반주 동시 재생, 드럼 볼륨 조절)
 - `76c49e6` feat: 2단계 - 화면 셸 (3-stage 와이어프레임)
 - `da4ec57` chore: 1단계 - 초기 세팅 (Next.js 16, DESIGN.md, CLAUDE.md, Pretendard)
@@ -99,26 +214,44 @@
    로 디코드(항상 정확 44100, 임의 SR 곡도 브라우저가 44100 리샘플)**.
    재검증 cos 0.99999989. 교훈: 브라우저 오디오 디코드는 디바이스 컨텍스트 SR 로
    리샘플된다 — 모델 입력은 OfflineAudioContext 로 SR 고정.
+5. **4-C SeparatingView StrictMode 가드 결함**: `startedRef` 가드 + cleanup
+   `cancelled=true` 조합에서, dev StrictMode(setup→cleanup→setup)의 1차
+   cleanup 이 유일하게 실행되는 async 를 `cancelled` 로 죽여 "파일 읽는 중"
+   영구 정지. **수정: cancelled/cleanup 제거, `startedRef` 1회 실행 +
+   `doneRef` 1회 가드**(React 19 는 unmount 후 setState 무해 no-op).
+   교훈: StrictMode 1회성 비동기는 cleanup-cancel 패턴과 충돌 — 가드는
+   "시작 1회 + 종료 1회"로, 취소를 cleanup 클로저에 묶지 말 것.
+6. **하이브리드 모델 절반만 사용 (분리 품질 결함)**: HTDemucs 는 시간분기
+   `add_77` + 스펙트럼분기 `add_76`(ISTFT 필요) 합이 최종 소스인데 worker 가
+   `add_77`만 사용 → 각 소스 ~30% 손실, 분리 뭉개짐. 4-B 검증이 못 잡은 건
+   Python ref 도 `add_77`-only 라 양쪽이 같은 결함 공유(rc#4 와 동형 사각지대).
+   교훈: 검증 기준이 피검증물과 같은 가정을 공유하면 결함이 안 보인다 —
+   기준은 독립 권위(공식 demucs apply_model)로. 발견: 산출물 자체 재구성
+   정합성(sum vs mix)을 절대지표로 측정(cos 0.955=결함 신호였음, "sane"로 오독).
 
-## 미검증 가정 / 다음 판단
-1. 모바일/Safari 안내 화면(DESIGN.md §8) — 의도적 보류. 4단계 브라우저 능력
-   게이팅과 함께 붙이는 게 자연스러움.
-2. 스모크 테스트 일회성(임시 `%TEMP%\drumroom-e2eN`). 상시 회귀 E2E 도입 추후.
-3. `window.__drumRoomEngine` 디버그 핸들 — 검증용. 출시 전 가드/제거 검토.
-4. 실제 소리 청취(성공항목 2~4: 싱크/드럼0%면 반주만/100%면 둘 다, 틱 잡음 무)
-   — 사용자가 localhost:3200에서 직접 확인 대기.
+## 사용자 확인 대기 (헤드리스 불가 — 직접 청취/체감)
+0. ✅ A/B 청취 게이트 **통과**(B 승인) → 4-D 이식·검증 완료.
+   **[최우선·커밋 게이트] 실제 앱 슬라이더 체감**: 4-D 적용 후 앱에서
+   곡 넣기→분리→연습→드럼 슬라이더(0%/가이드/원곡) 직접 조작·청취해
+   "드럼이 또렷이 빠지고/들어오는지" 확인. 수치상 shipped 코드 출력 =
+   사용자 승인 B_*.wav 와 동일(cos~1) 입증됨 — 남은 건 실청취 1건.
+   확인되면 4-D + 4-C 커밋.
+1. 실제 곡 분리 **음질**: drums 트랙이 쓸 만한지, 슬라이더 0%에서 드럼이
+   충분히 빠지는지, 100%에서 원곡처럼 되는지, 슬라이더 조작 시 틱 잡음 무.
+2. 분리 **소요 시간 체감**: 단일스레드 WASM ~50–65s/10초청크
+   (3분 곡 ≈ 20분). 1차 허용 범위인지 사용자 판단.
+3. 3단계 재생 싱크/품질(이전 단계부터 대기) — 이제 실제 분리 곡으로 확인 가능.
 
-## 다음 단계 (4-C — 1차 완성) 먼저 확인할 것
-- 4-C = 분리 엔진을 앱에 연결: 곡 넣기 화면(파일) → `separateFile` →
-  분리 중 화면에 **진짜 진행률**(worker progress 청크 N/총M) → 결과
-  {drumsBuffer,backingBuffer} 를 3단계 audio-engine 에 주입(현재 load()는 URL
-  입력 → AudioBuffer 직접 주입 오버로드 필요).
-- 모델 ~163MB **첫 방문 1회 다운로드 + 캐시**(Cache API/IndexedDB) — 4-C 핵심.
-  wasmPaths 자기호스팅 여부도 4-C 결정(현재 jsDelivr CDN).
-- **제거/가드 대상(검증 잔재)**: `src/app/sep-test/` 라우트,
-  `window.__drumRoomEngine` 디버그 핸들, sep-worker 의 디버그성 경로.
-- 미커밋 변경분(4-B 커밋은 사용자 지시 대기): `package.json`/lock
-  (onnxruntime-web), `src/lib/{stft,separation-worker,separation-engine}.ts`,
-  `src/app/sep-test/page.tsx`, `.gitignore`(model-prep/), `SESSION_STATE.md`.
-- 잔존: 테스트 Chrome 프로세스가 임시폴더 잠금(사용자 실Chrome 보호 위해
-  강제 종료 안 함, TEMP라 OS 정리). model-prep(모델+venv+ref클론) gitignore됨.
+## 미커밋 / 다음 판단
+- **4-D 미커밋(사용자 실앱 슬라이더 청취 후 커밋)**: `src/lib/istft.ts`
+  (신규), `src/lib/separation-worker.ts`(수정 — add_76 ISTFT 가산).
+- **4-C 미커밋(동반)**: `src/lib/{model-cache,env-support}.ts`(신규),
+  `src/lib/{audio-engine,separation-engine}.ts`(수정), `src/components/
+  {SeparatingView,PracticeView,UploadView}.tsx`, `src/app/page.tsx`,
+  `src/app/sep-test/`(삭제), `SESSION_STATE.md`. 4-B=`a346973` 기커밋.
+  → 4-D·4-C 함께 또는 4-D 먼저 커밋(사용자 판단). 권장 커밋 메시지(4-D):
+  `fix: 4-D - 스펙트럼 분기(add_76 ISTFT) 복원 — 하이브리드 분리 정상화`.
+- 2차 후보: 가속(WebGPU/멀티스레드 — COOP/COEP), wasmPaths 자가호스팅,
+  구간 루프·템포·메트로놈·악보. 1차 실사용 후 결정.
+- 잔재: 테스트 Chrome 프로세스가 임시폴더 잠금(사용자 실Chrome 보호 위해
+  강제 종료 안 함, TEMP라 OS 정리). model-prep(모델+venv+ref) gitignore됨.
