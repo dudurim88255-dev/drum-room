@@ -81,10 +81,12 @@ export default function SeparatingView({
       if (doneRef.current) return;
       doneRef.current = true;
       const msg = e instanceof Error ? e.message : String(e);
+      // 단계로 정확히 분류: 디코드 실패(AudioDecodeError)만 "파일 못 엶".
+      // 그 외(모델/worker/ort)는 원문을 그대로 보여 오분류·오진단 방지.
+      const isDecode =
+        e instanceof Error && (e as { code?: string }).code === "AUDIO_DECODE";
       onError(
-        /decode|EncodingError|Unable to decode|Failed to|not be decoded/i.test(
-          msg,
-        )
+        isDecode
           ? "이 파일은 열 수 없습니다. 다른 음원(mp3/wav/flac/m4a)을 넣어 주세요."
           : `분리 실패: ${msg}`,
       );

@@ -3,14 +3,85 @@
 > 세션 시작 시 이 파일을 먼저 읽는다. "미검증 가정" 항목은 코드 작업 전 검증한다.
 
 ## 현 단계
-- **drum-room 1차 — 4-D 스펙트럼 분기 복원: Phase B 구현·검증 완료(미커밋).**
-  사용자 A/B 청취 승인 → `src/lib/istft.ts`(신규, demucs `_ispec`+`_mask`
-  cac 의 torch-정확 이식) + `separation-worker.ts`(add_76 ISTFT 가산) 적용.
-  3중 게이트 PASS: ①istft.ts==torch `_ispec` cos 1.0 ②풀곡 worker==사용자
-  승인 B_*.wav cos~1 ③재구성 cos 0.997/잔차 9.4%(망가진 A 0.955/29.8% 해결).
-  tsc/eslint 0. **커밋 대기 = 사용자가 실제 앱에서 슬라이더 동작 청취 확인 후.**
+- **1차 완성·커밋됨**: 4-C `151510d`, 4-D `26d01a6`(스펙트럼 분기 복원).
+  사용자 실앱 슬라이더 청취 확인 후 커밋 완료.
+- **2차-1 진행 중 — 분리 속도(WASM 단일→멀티스레드): 구현·품질검증
+  완료, 실속도는 사용자 브라우저 측정 대기(미커밋).** 아래 [2차-1] 참조.
 - ⚠ 이전 "코드/배선/분리/버퍼매핑 버그 없음" 결론은 **반증**됐었고, root
   cause(하이브리드 절반만 사용)는 4-D 로 해결됨(아래 [버그조사]·4-D 참조).
+
+## [2차-1] 분리 속도: WASM 멀티스레드 (구현·품질검증 완료, 미커밋)
+- 목적: onnxruntime-web WASM 단일스레드 → 멀티스레드(코어 비례 가속).
+  품질 절대 불변(같은 모델·연산, 일꾼 수만 ↑)이 절대조건.
+- 변경 파일:
+  - `next.config.ts`: `headers()` 로 COOP/COEP(`/:path*`) — next dev 적용.
+  - `vercel.json`(신규): 같은 COOP/COEP(`/(.*)`) — 정적 export 배포용
+    (export 시 next headers() 무시되므로 별도 필요, static-exports.md 확인).
+  - `public/ort/ort-wasm-simd-threaded.{wasm,mjs}`(신규, 13MB) —
+    onnxruntime-web 1.26.0 자기호스팅. COEP require-corp 에서 CDN
+    cross-origin wasm 차단 회피(같은 출처). public/ 라 git 포함(모델
+    163MB 와 달리 13MB 는 정상 — 모델만 비커밋 원칙 유지).
+  - `separation-worker.ts`: `numThreads=1` → `min(hwConcurrency-1, 8)`
+    (1코어는 UI 여유), `wasmPaths` jsDelivr → `/ort/`. simd 유지.
+  - `model-cache.ts`: fetch `mode:'cors'` 명시 + COEP 차단 감지 에러
+    (출처 ACAO:* 라 통과 예상 — 4-A 확인; 163MB 호스팅 변경은 사용자
+    결정사항이라 미변경, 막히면 보고).
+- context7(권위 onnxruntime 소스) 확인: ort-web 은 `self.crossOriginIsolated
+  =false` 면 자동 `numThreads=1` 폴백(backend-wasm.ts) → 헤더 없거나 막혀도
+  **안전(정답 동일, 단일스레드라 느릴 뿐)**. 멀티스레드의 하드 전제 = 헤더.
+- **검증 결과**:
+  - ✅ COOP/COEP 헤더 실측: `/`·`/ort/*.wasm`(application/wasm,13022405B
+    전체)·`/ort/*.mjs`·`/_next/*.js`(워커 번들 포함) 전부 same-origin/
+    require-corp. → 동일출처 자산만 → crossOriginIsolated=true 보장.
+  - ✅ **품질 절대조건 PASS(객관)**: `model-prep/ortmt_gate.mjs` — 브라우저와
+    동일 런타임 ort-web 1.26.0 을 Node 에서 단일(numThreads=1) vs 멀티(3)
+    같은 실제 청크 추론: **add_76/add_77 cos=1.00000000, maxAbs=0.0(비트
+    동일)**. 멀티스레드가 연산 불변. 4-D 교차증거(B=멀티스레드 Python ORT
+    ≈ 사용자 승인 단일스레드 앱)와 삼각 일치.
+  - ⚠ **속도: Node 1.07x — 비대표적, 결론 보류(우회 아님, 정확 보고)**.
+    이 Node 박스 논리CPU 4개 + ort-web 스레드 스폰은 브라우저 pthread
+    전용이라 Node 측정은 대표성 없음. **실속도는 사용자 브라우저(실제
+    머신, crossOriginIsolated)에서만 유의미** → 지시서 커밋 게이트와 일치.
+  - tsc --noEmit 0, eslint 0.
+- **[회귀 추적·수정] mp3 "열 수 없음" 거부 (2차-1 도입, 수정 완료)**:
+  - 증상: 2차-1 후 mp3 넣으면 "이 파일은 열 수 없습니다(mp3/wav…)" → 분리
+    못 감. 1차(26d01a6)는 정상 → 2차-1 회귀.
+  - 추적(추측 배제, 충실 재현): 헤드리스 Chrome+CDP 로 실제 앱 환경
+    (COOP/COEP, crossOriginIsolated=true) 재현. ① mp3/wav decodeAudioData
+    ·모델 fetch **전부 정상**(가설 "COEP가 디코드/모델 깸" 반증). ② CDP
+    `DOM.setFileInputFiles` 로 실제 mp3 주입 → headline `드럼 분리 중 0%`
+    까지 가서 실패(디코드·모델다운로드 성공). ③ worker 임시 진단+worker
+    타깃 attach 로 **원문 확보**: `no available backend found. ERR:[wasm]
+    Failed to fetch dynamically imported module .../ort/ort-wasm-simd-
+    threaded.jsep.mjs`.
+  - **ROOT CAUSE**: 2차-1 ort wasm 자기호스팅 시 **변형 불일치**.
+    onnxruntime-web 1.26 기본 번들은 **JSEP 빌드** → `ort-wasm-simd-
+    threaded.jsep.{mjs,wasm}` 요청. 그런데 비-jsep `ort-wasm-simd-
+    threaded.{mjs,wasm}` 만 복사 → `.jsep.mjs` 404 → 백엔드 없음. 1차는
+    jsDelivr CDN 이 전 변형 제공해 동작(자기호스팅서 jsep 누락이 회귀).
+    포맷 무관(mp3 특정 아님 — wav 도 동일). 그 에러가 `/Failed to/i`
+    정규식에 걸려 "파일 못 엶"으로 **오분류**돼 디코드 문제로 보였음.
+  - **수정(우회 없음, 멀티스레드·mp3 양립)**:
+    · `public/ort/` = `ort-wasm-simd-threaded.jsep.{mjs,wasm}` 로 교체
+      (잘못된 비-jsep 짝 삭제). jsep.wasm 26MB(정확한 산출물 — 모델
+      163MB 만 비커밋 원칙 유지, 26MB 는 런타임이라 git 포함).
+    · 부수결함 교정(재발 방지): `separation-engine.ts` 에
+      `AudioDecodeError`(code AUDIO_DECODE) 추가, `decodeAudioFile` 의
+      디코드 실패만 이 타입. `SeparatingView` 가 넓은 정규식 대신 이
+      타입으로 단계 분류 → 모델/worker/ort 에러는 원문 그대로 표시
+      (오분류·오진단 방지).
+  - **재검증(충실 재현, 동일 하니스)**: 실제 mp3 → 곡 넣기→분리(멀티
+    스레드 0→33→67%)→연습 화면 도달. alert·예외·console.error·Network
+    실패·worker에러 **전부 0**. tsc/eslint 0. 임시 worker 진단 제거,
+    public 임시 자산(coi-test.html,_coi_test.mp3) 삭제.
+- **다음(커밋 게이트)**: 사용자가 실제 앱에서 (a) crossOriginIsolated=true,
+  (b) 모델 다운로드 정상(COEP 통과), (c) mp3 곡 넣기→분리→연습 정상
+  (회귀 해소 체감), (d) 분리 속도 체감(단일 대비 배수), (e) 음질이 1차와
+  동일 확인 → 좋으면 2차-1(회귀수정 포함) 커밋. 속도 미흡 시 WebGPU.
+- 재현/잔재(전부 gitignore model-prep): `ortmt_gate.mjs`(품질),
+  `coi_probe.mjs`/`app_repro.mjs`(CDP 충실 재현 — 회귀 회귀검사용 보존),
+  `coi-test.html`/`_coi_test.mp3` 는 public 에서 삭제됨. dev 서버는
+  next.config 변경 시 재기동 필요(현재 `besiiz4wo` 신헤더로 가동 중).
 
 ## [버그조사] "연습 화면 드럼 슬라이더가 오디오에 안 먹는다" (실제 곡)
 사용자 보고: 실제 곡("타오르는 밤의 끝") 분리·재생 정상, 그러나 드럼 볼륨

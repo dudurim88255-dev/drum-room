@@ -98,6 +98,19 @@ export function separate(
 const TARGET_SR = 44100;
 
 /**
+ * 디코드 단계 실패 전용 에러. SeparatingView 가 "어느 단계 실패인지"를
+ * 메시지 문자열 추측(/Failed to/ 등)이 아니라 이 타입으로 정확히 가른다
+ * — 회귀(2차-1)에서 worker/ort 에러가 디코드 에러로 오분류된 재발 방지.
+ */
+export class AudioDecodeError extends Error {
+  readonly code = "AUDIO_DECODE" as const;
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "AudioDecodeError";
+  }
+}
+
+/**
  * 모델은 44100Hz 입력을 기대한다. 디바이스 AudioContext 의 sampleRate(예: 48000)
  * 로 decodeAudioData 하면 리샘플돼 모델 입력이 어긋난다(검증에서 cos≈0 로 발견).
  * → OfflineAudioContext(44100) 로 디코드해 항상 정확히 44100 PCM 을 얻는다.
@@ -109,7 +122,13 @@ export async function decodeAudioFile(file: ArrayBuffer): Promise<Pcm> {
     (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext })
       .webkitOfflineAudioContext;
   const oac = new OAC(2, 1, TARGET_SR);
-  const decoded = await oac.decodeAudioData(file.slice(0));
+  let decoded: AudioBuffer;
+  try {
+    decoded = await oac.decodeAudioData(file.slice(0));
+  } catch (e) {
+    // 디코드 실패만 "파일 못 엶"으로 분류되도록 단계 표식을 붙인다.
+    throw new AudioDecodeError(e);
+  }
   const left = new Float32Array(decoded.getChannelData(0));
   const right =
     decoded.numberOfChannels > 1

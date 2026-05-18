@@ -52,7 +52,18 @@ export async function loadModel(
     await cache.delete(MODEL_URL);
   }
 
-  const res = await fetch(MODEL_URL);
+  // COEP require-corp 환경(멀티스레드용 crossOriginIsolated)에서도 통과하도록
+  // CORS 모드 명시 — 출처(media.githubusercontent.com)가 ACAO:* 를 주므로
+  // (4-A 확인) cross-origin 이어도 차단되지 않는다. 막히면 자가호스팅 검토.
+  let res: Response;
+  try {
+    res = await fetch(MODEL_URL, { mode: "cors", credentials: "omit" });
+  } catch (e) {
+    throw new Error(
+      "모델 다운로드 실패 (네트워크/COEP 차단 가능 — 자가호스팅 검토 필요): " +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
   if (!res.ok || !res.body) {
     throw new Error(`모델 다운로드 실패 (HTTP ${res.status})`);
   }

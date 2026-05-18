@@ -5,12 +5,20 @@ import * as ort from "onnxruntime-web";
 import { buildSpec, SEG } from "./stft";
 import { spectralWaveform } from "./istft";
 
-// 단일 스레드 WASM (COOP/COEP 불필요 — 1차 안정성 우선).
-ort.env.wasm.numThreads = 1;
+// 멀티스레드 WASM: crossOriginIsolated(COOP/COEP)면 코어 수만큼 추론을 병렬
+// 처리해 속도↑. 같은 모델·같은 연산, 일꾼 수만 늘림 → 분리 품질 불변.
+// onnxruntime-web 은 self.crossOriginIsolated=false 면 자동으로 numThreads=1
+// 로 폴백한다(backend-wasm.ts) → 헤더가 없거나 막혀도 안전(정답 동일, 단
+// 단일스레드라 느릴 뿐). 전부 쓰지 않고 1코어는 남긴다(UI/메인 여유).
+const HC =
+  typeof navigator !== "undefined" && navigator.hardwareConcurrency
+    ? navigator.hardwareConcurrency
+    : 4;
+ort.env.wasm.numThreads = Math.max(1, Math.min(HC - 1, 8));
 ort.env.wasm.simd = true;
-// 번들러가 wasm 을 emit 하지 않아도 되도록 CDN 고정 (자기호스팅은 4-C 결정).
-ort.env.wasm.wasmPaths =
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.26.0/dist/";
+// COEP require-corp 환경에선 CDN(cross-origin) wasm 로딩이 차단될 수 있다.
+// onnxruntime-web wasm 을 같은 출처(public/ort/)로 자기호스팅 → COEP 무관.
+ort.env.wasm.wasmPaths = "/ort/";
 
 const TARGET_SR = 44100;
 const OVERLAP = 0.25; // Demucs 기본
