@@ -4,17 +4,40 @@ import { useEffect, useRef, useState } from "react";
 import { loadModel, type ModelProgress } from "@/lib/model-cache";
 import { decodeAudioFile, separate } from "@/lib/separation-engine";
 import { getAudioEngine } from "@/lib/audio-engine";
+import {
+  hashFile,
+  getCachedSong,
+  saveSong,
+  type RestoredSong,
+} from "@/lib/result-cache";
 
-// 분리 중 화면 (4-C: 진짜). 모델 1회 다운로드(진행률)+캐시 → 곡 분리
-// (Web Worker, 청크 N/M 진행률) → 결과 두 트랙을 재생 엔진에 주입.
+// 분리 중 화면. 2차-2: 먼저 결과 캐시(IndexedDB)를 확인 — 같은 곡이면
+// ~8분30초 재분리를 건너뛰고 저장된 트랙을 즉시 재생 엔진에 주입.
+// 캐시 미스만 기존 흐름(디코드 → 모델 → worker 분리) → 끝나면 저장.
+export type SepSource =
+  | { kind: "file"; file: File }
+  | { kind: "cached"; hash: string; name: string };
+
 type UI = { headline: string; pct: number; detail: string };
 
+function injectRestored(r: RestoredSong): void {
+  const engine = getAudioEngine();
+  const ctx = engine.getContext();
+  const drums = ctx.createBuffer(2, r.length, r.sampleRate);
+  drums.getChannelData(0).set(r.dL);
+  drums.getChannelData(1).set(r.dR);
+  const backing = ctx.createBuffer(2, r.length, r.sampleRate);
+  backing.getChannelData(0).set(r.bL);
+  backing.getChannelData(1).set(r.bR);
+  engine.loadBuffers(drums, backing);
+}
+
 export default function SeparatingView({
-  file,
+  source,
   onDone,
   onError,
 }: {
-  file: File;
+  source: SepSource;
   onDone: () => void;
   onError: (msg: string) => void;
 }) {
@@ -23,10 +46,7 @@ export default function SeparatingView({
     pct: 0,
     detail: "",
   });
-  // StrictMode 이중 마운트 + 무거운 작업 → 1회만 실행.
-  // 주의: cleanup 에서 cancel 플래그를 세우는 패턴은 StrictMode 에서
-  // (setup→cleanup→setup) 1차 cleanup 이 유일한 async 를 죽인다. 그래서
-  // 취소 플래그를 두지 않고, 종료 콜백만 doneRef 로 1회 가드한다.
+  // StrictMode 이중 마운트 가드: 시작 1회 + 종료 1회 (4-C 교훈).
   const startedRef = useRef(false);
   const doneRef = useRef(false);
 
@@ -34,14 +54,41 @@ export default function SeparatingView({
     if (startedRef.current) return;
     startedRef.current = true;
 
-    (async () => {
-      const ab = await file.arrayBuffer();
+    const finish = () => {
+      if (doneRef.current) return;
+      doneRef.current = true;
+      onDone();
+    };
 
-      // 0) 디코드 먼저 — 잘못된 파일이면 163MB 모델 받기 전에 빠르게 실패
+    (async () => {
+      // 목록에서 연 캐시 곡: 파일 없이 바로 복원
+      if (source.kind === "cached") {
+        setUi({ headline: "저장된 곡 불러오는 중", pct: 0, detail: "" });
+        const r = await getCachedSong(source.hash);
+        if (!r) throw new Error("저장된 곡을 찾을 수 없습니다");
+        injectRestored(r);
+        finish();
+        return;
+      }
+
+      const ab = await source.file.arrayBuffer();
+
+      // 0) 결과 캐시 확인 — 같은 곡이면 재분리 스킵(이게 2차-2 핵심)
+      setUi({ headline: "파일 확인 중", pct: 0, detail: "" });
+      const hash = await hashFile(ab);
+      const cached = await getCachedSong(hash);
+      if (cached) {
+        setUi({ headline: "이미 분리된 곡 — 바로 시작", pct: 100, detail: "" });
+        injectRestored(cached);
+        finish();
+        return;
+      }
+
+      // 1) 디코드 (잘못된 파일이면 163MB 모델 받기 전에 빠르게 실패)
       setUi({ headline: "파일 읽는 중", pct: 0, detail: "" });
       const pcm = await decodeAudioFile(ab);
 
-      // 1) 모델 (첫 방문 1회 다운로드 + 캐시, 이후 즉시)
+      // 2) 모델 (첫 방문 1회 다운로드 + 캐시)
       const onModel = (p: ModelProgress) => {
         if (p.phase === "download") {
           setUi({
@@ -57,11 +104,11 @@ export default function SeparatingView({
       };
       const { bytes } = await loadModel(onModel);
 
-      // 2) 분리 (Web Worker, 청크 진행률)
+      // 3) 분리 (Web Worker, 청크 진행률) — 기존 로직 그대로
       setUi({ headline: "드럼 분리 중", pct: 0, detail: "세그먼트 0/—" });
       const engine = getAudioEngine();
       const { drumsBuffer, backingBuffer } = await separate(pcm, bytes, {
-        audioContext: engine.getContext(), // 단일 컨텍스트 유지
+        audioContext: engine.getContext(),
         onProgress: (chunk, totalChunks) => {
           setUi({
             headline: "드럼 분리 중",
@@ -71,18 +118,24 @@ export default function SeparatingView({
         },
       });
 
-      // 3) 결과를 3단계 재생 엔진에 주입 → 연습 화면
+      // 4) 재생 엔진 주입 + 결과 저장(best-effort: 실패해도 흐름 계속)
       engine.loadBuffers(drumsBuffer, backingBuffer);
-      if (!doneRef.current) {
-        doneRef.current = true;
-        onDone();
+      setUi({ headline: "결과 저장 중", pct: 100, detail: "다음엔 즉시 시작" });
+      try {
+        await saveSong(
+          { hash, name: source.file.name },
+          drumsBuffer,
+          backingBuffer,
+        );
+      } catch {
+        // 저장은 "있으면 좋은" 부가기능 — 실패해도 분리·연습은 정상 진행
       }
+      finish();
     })().catch((e: unknown) => {
       if (doneRef.current) return;
       doneRef.current = true;
       const msg = e instanceof Error ? e.message : String(e);
-      // 단계로 정확히 분류: 디코드 실패(AudioDecodeError)만 "파일 못 엶".
-      // 그 외(모델/worker/ort)는 원문을 그대로 보여 오분류·오진단 방지.
+      // 디코드 실패(AudioDecodeError)만 "파일 못 엶". 그 외 원문 표시.
       const isDecode =
         e instanceof Error && (e as { code?: string }).code === "AUDIO_DECODE";
       onError(
@@ -91,8 +144,8 @@ export default function SeparatingView({
           : `분리 실패: ${msg}`,
       );
     });
-    // file 은 마운트 시 고정. onDone/onError 는 안정 참조(부모 useCallback).
-    // cleanup 없음(StrictMode 에서 async 를 죽이지 않기 위함).
+    // source 는 마운트 시 고정. onDone/onError 는 부모 useCallback 안정 참조.
+    // cleanup 없음(StrictMode 에서 async 를 죽이지 않기 위함 — 4-C 교훈).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

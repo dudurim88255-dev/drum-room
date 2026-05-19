@@ -2,11 +2,12 @@
 
 import { useCallback, useState, useSyncExternalStore } from "react";
 import UploadView from "@/components/UploadView";
-import SeparatingView from "@/components/SeparatingView";
+import SeparatingView, { type SepSource } from "@/components/SeparatingView";
 import PracticeView from "@/components/PracticeView";
 import { checkSupport } from "@/lib/env-support";
 
 // 단일 페이지 + 세 화면을 stage 로 전환. 4-C: 실제 곡 분리 → 연습.
+// 2차-2: source 는 새 파일 또는 저장된(캐시) 곡 — SeparatingView 가 양쪽 처리.
 type Stage = "upload" | "separating" | "practice";
 
 // 클라이언트 전용 능력 감지를 하이드레이션 안전하게(서버=null → "checking").
@@ -19,7 +20,7 @@ function getSupportSnapshot(): boolean {
 
 export default function Home() {
   const [stage, setStage] = useState<Stage>("upload");
-  const [file, setFile] = useState<File | null>(null);
+  const [source, setSource] = useState<SepSource | null>(null);
   const [drumVolume, setDrumVolume] = useState(25);
   const [isPlaying, setIsPlaying] = useState(false);
   const [sepError, setSepError] = useState<string | null>(null);
@@ -32,7 +33,13 @@ export default function Home() {
 
   const handleFileSelected = useCallback((picked: File) => {
     setSepError(null);
-    setFile(picked);
+    setSource({ kind: "file", file: picked });
+    setStage("separating");
+  }, []);
+
+  const handleOpenCached = useCallback((hash: string, name: string) => {
+    setSepError(null);
+    setSource({ kind: "cached", hash, name });
     setStage("separating");
   }, []);
 
@@ -42,9 +49,16 @@ export default function Home() {
 
   const handleSeparationError = useCallback((msg: string) => {
     setSepError(msg);
-    setFile(null);
+    setSource(null);
     setStage("upload");
   }, []);
+
+  const title =
+    source?.kind === "file"
+      ? source.file.name
+      : source?.kind === "cached"
+        ? source.name
+        : null;
 
   return (
     <main
@@ -124,19 +138,20 @@ export default function Home() {
             {stage === "upload" && (
               <UploadView
                 onFileSelected={handleFileSelected}
+                onOpenCached={handleOpenCached}
                 error={sepError}
               />
             )}
-            {stage === "separating" && file && (
+            {stage === "separating" && source && (
               <SeparatingView
-                file={file}
+                source={source}
                 onDone={handleSeparationDone}
                 onError={handleSeparationError}
               />
             )}
             {stage === "practice" && (
               <PracticeView
-                fileName={file?.name ?? null}
+                fileName={title}
                 drumVolume={drumVolume}
                 setDrumVolume={setDrumVolume}
                 isPlaying={isPlaying}
