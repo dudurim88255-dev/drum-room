@@ -86,7 +86,9 @@ export default function Home() {
       <div
         style={{
           width: "100%",
-          maxWidth: "560px",
+          // 연습 화면만 가로 공간을 써 2열 배치(세로 단축). 곡 넣기·분리
+          // 중·미지원 안내는 1차 그대로 560px(DESIGN.md §5 콘텐츠 폭).
+          maxWidth: stage === "practice" ? "880px" : "560px",
           background: "var(--color-surface)",
           border: "1px solid var(--color-border)",
           borderRadius: "var(--radius-lg)",

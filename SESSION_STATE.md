@@ -2,15 +2,30 @@
 
 > 세션 시작 시 이 파일을 먼저 읽는다. "미검증 가정" 항목은 코드 작업 전 검증한다.
 
+## ⏸ 세션 종료 (퇴근) — 재개 지점
+- 마지막 커밋: `da4da69` (2차-3). **미커밋(디스크 저장됨, 손실 아님)**:
+  `src/lib/metronome.ts`(신규=2차-4), `src/components/PracticeView.tsx`·
+  `src/app/page.tsx`(수정=2차-4/2차-5), `SESSION_STATE.md`.
+- 상태: 2차-4(메트로놈)·2차-5(레이아웃+메트로놈 접이식) 구현·Phase C
+  전부 PASS·tsc/eslint/build 0. **커밋은 사용자 게이트라 보류**(미수행).
+- **다음 세션 첫 행동**: 커밋하지 말 것. 사용자가 실앱에서 (a)메트로놈
+  기능 (b)접이식 동작 (c)한 화면 들어옴 을 확인하면 → 그때 2차-4·2차-5
+  정리 커밋(메시지·구성 사용자 확인 후). 이상 보고 시 우회 없이 추적.
+- dev 서버 `besiiz4wo`(localhost:3200) 백그라운드 가동 중(로컬, 무해).
+- 미검증 가정 없음(Phase C 객관 검증 완료; 실제 클릭 음색·시각 정돈감만
+  사용자 청취 대기 — 정상 동작 자체는 입증됨).
+
 ## 현 단계
 - **1차 완성·커밋**: 4-C `151510d`, 4-D `26d01a6`.
 - **2차-1 완성·커밋** `f0c832f`: WASM 멀티스레드(사용자 실앱 20분→8분30초
   확인, 품질 비트 동일). 회귀(mp3 거부=jsep 자기호스팅 누락) 동봉 수정.
-- **2차-2 분리 결과 자동 저장(IndexedDB): 구현·Phase C 완료, 미커밋.**
-  같은 곡 재투입 시 8분30초 재분리 스킵. 아래 [2차-2].
-- **2차-3 타임라인+구간반복: 구현·Phase C 완료, 미커밋.** 아래 [2차-3].
-  seek stale-onended 경쟁 버그도 발견·수정. 커밋 게이트 = 사용자가 실앱에서
-  2차-2(같은 곡 즉시·음질 동일)+2차-3(타임라인/A-B 반복) 확인 → 함께/순서 커밋.
+- **2차-2 완성·커밋** `01e4d6b`: 분리 결과 IndexedDB 자동 저장(같은 곡 즉시).
+- **2차-3 완성·커밋** `da4da69`: 타임라인+구간반복+곡끝정지+구간 재선택.
+  (추적·수정: seek stale-onended 경쟁, B 재탭 교차.)
+- **2차-4 메트로놈 + 2차-5 레이아웃·메트로놈 접이식: 구현·Phase C 완료,
+  미커밋.** 아래 [2차-4]·[2차-5]. 커밋 게이트 = 사용자 실앱에서 (a)메트로놈
+  박자/강약/기능 (b)접이식 동작 (c)한 화면에 들어옴 확인 → 2차-4·2차-5
+  정리 커밋(구성은 사용자 확인 후).
 - ⚠ 이전 "코드/배선/분리/버퍼매핑 버그 없음" 결론은 **반증**됐었고, root
   cause(하이브리드 절반만 사용)는 4-D 로 해결됨(아래 [버그조사]·4-D 참조).
 
@@ -182,7 +197,70 @@
     ·소스 재생성 회피 코드경로로 간접 입증).
 - 커밋 게이트: 사용자가 실앱에서 타임라인 진행/클릭 seek/A-B 반복 매끄러움
   ·두 트랙 싱크/루프OFF 곡끝 정지/루프중 볼륨·**재생 끊지 않고 A→B
-  재지정** 확인 → 2차-2 와 함께/순서 커밋.
+  재지정** 확인 → 2차-2 와 함께/순서 커밋. **(완료: 01e4d6b/da4da69)**
+
+## [2차-4] 메트로놈 (구현·Phase C 완료, 미커밋)
+- 목적: 연습 화면에 정밀 박자 클릭음. 분리/worker/istft/2차-1·2·3/곡
+  재생 로직 무수정 — 별도 모듈 + PracticeView UI 추가만.
+- Phase A 승인(박자 2~7·곡과 독립 토글·컨텍스트 공유·합성 클릭).
+- 구현:
+  - `src/lib/metronome.ts`(신규, 싱글턴): AudioContext 는
+    `getAudioEngine().getContext()` **공유**(같은 clock)하되 **자기 GainNode
+    →destination 으로만 출력**(곡 master/drum/backing 체인 무관·무영향).
+    lookahead 스케줄러(setInterval 25ms 가 [now,now+0.1s] 박을 ctx 정밀
+    시각에 예약, `nextNoteTime+=60/bpm`). 클릭=일회용 triangle osc+gain
+    exp 엔벨로프(팝 방지), 강박 1500Hz/약박 900Hz. API: start/stop/
+    setBpm(40~240)/setBeatsPerBar(2~7)/setVolume/getState. 곡 엔진 코드
+    호출/수정 없음(컨텍스트만 read 공유).
+  - `src/components/PracticeView.tsx`(추가): 하단 메트로놈 그룹(상단
+    구분선, 캡션) — 토글(preset-btn, 켜짐=accent)·BPM(슬라이더+−/＋+큰
+    숫자)·박자(−N＋)·메트로놈 볼륨 슬라이더. 언마운트 시 metro.stop().
+    DESIGN.md 토큰·앰버 절제, 기존 레이아웃 무변경.
+- **Phase C(CDP, OscillatorNode.start 테스트측 래핑으로 실제 예약
+  tick 시각·주파수 실측, `model-prep/metro_repro.mjs`, 전부 PASS)**:
+  M1 120bpm/4 → 박 간격 정확 0.5s **maxJitter≈4e-16**(머신 엡실론, 타이밍
+  안정)·강박 4박주기·freq{1500,900}; M2 BPM90 즉시(Δ0.667); M3 박자3
+  즉시(강박 주기3); M4 곡 재생+구간반복 중 곡 진행·메트로놈 동시·곡 재생
+  유지(독립·무영향); M5 볼륨 변경 무에러 계속; M6 곡 정지 시 메트로놈
+  단독; M7 off→tick0. console 0. tsc/eslint 0, next build ✓.
+  git: metronome.ts 신규 + PracticeView 수정만(audio-engine/worker/istft/
+  result-cache 무수정 확인). 실제 클릭 음색·볼륨밸런스만 청취=커밋게이트.
+- 커밋: 2차-5 와 함께(아래). 재현: `metro_repro.mjs`(gitignore).
+
+## [2차-5] 연습 화면 레이아웃 재정비 + 메트로놈 접이식 (구현·Phase C 완료, 미커밋)
+- 문제: 2차-3·2차-4 누적으로 연습 화면이 한 화면 초과(스크롤). +사용자
+  지적: 메트로놈이 펼쳐져 절반 차지=주객전도(곡 연습이 주, 메트로놈 곁다리).
+- 조치(로직 무수정 — 배치만): `audio-engine/metronome/worker/istft/
+  result-cache 무수정`. 변경 = `src/app/page.tsx`(연습 stage 만 카드폭
+  560→**880**, 그 외 화면 560 유지=DESIGN §5) + `src/components/
+  PracticeView.tsx`(return JSX 재구성, 핸들러·상태·effect 무변경; 추가
+  state 는 `metroExpanded` 1개).
+- 새 배치: 곡 제목 → **곡 컨트롤 2열(주)**[좌: 재생/정지+타임라인(가로
+  트랜스포트)+구간 A/B/반복, 우: 드럼 볼륨+프리셋] → **하단 메트로놈
+  접이식(곁다리)**. 접힘=얇은 한 줄(클릭=그 자리 펼침/접힘, 애니메이션
+  없이 즉시 — calm·무위험). 메트로놈 ON 이면 접힘 줄에 `● 켜짐 · NN BPM`
+  (accent 절제) — 접어둬도 켜짐·동작 인지. 펼침=2차-4 컨트롤(on/off·BPM·
+  박자·볼륨) 그 자리 등장. DESIGN.md 토큰·앰버 절제 유지. 좁은 폭은
+  flexWrap 으로 안전 스택.
+- **Phase C(`model-prep/metro_panel_repro.mjs`, 전부 PASS)**: 곡 넣기
+  화면 무파손·카드 560 유지; 기본 접힘(컨트롤 숨김); **한 화면 스크롤
+  없음** 1366×768·1280×800·1440×900·1280×720 전부 fits; 그 자리 펼침/
+  접힘; 켜진 채 접어도 인디케이터+계속 울림(osc 계측); 재배치 후 곡
+  컨트롤(재생·seek·프리셋) 정상; console 0. tsc/eslint 0, next build ✓.
+  (시각 "정돈감"·실제 클릭 음색은 사용자 청취=커밋게이트.)
+- 커밋 게이트(2차-4 동반): 사용자 실앱에서 (a)메트로놈 기능 (b)접이식
+  (c)한 화면 확인 → 2차-4·2차-5 정리 커밋(메시지·구성 사용자 확인 후).
+  재현: `metro_panel_repro.mjs`(gitignore model-prep).
+- **[2차-5 보정] 표시/문구만(로직 무변경)**: 접힘 줄 가독성 — color
+  `text-muted`→`text-secondary`(과한 흐림 해소, 곡 컨트롤보단 절제 유지).
+  레이아웃 `space-between`→`flex-start`+gap, "메트로놈"+"▾펼치기"를 인접
+  한 덩어리로(양 끝 분리 해소, 누르는 묶음으로 보이게). 켜짐 인디케이터는
+  그 뒤. PracticeView.tsx 만 수정, tsc/eslint 0.
+- **좌측 하단 영어 = Next.js 개발 도구 "N" 버튼**(`nextjs-portal` 웹컴포넌트,
+  Next16 dev 오버레이, shadow DOM). drum-room 코드 아님 — 좌측하단 우리
+  UI엔 한글뿐(헤드리스 스캔+스크린샷 확인). 한글화 불가/불필요, `next
+  build` 정적 배포본엔 미노출(dev 전용). 손대지 않음(보고만). 재현:
+  `bottomleft_probe.mjs`(gitignore).
 
 ## [버그조사] "연습 화면 드럼 슬라이더가 오디오에 안 먹는다" (실제 곡)
 사용자 보고: 실제 곡("타오르는 밤의 끝") 분리·재생 정상, 그러나 드럼 볼륨

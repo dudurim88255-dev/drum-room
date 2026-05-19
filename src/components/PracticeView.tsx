@@ -9,9 +9,11 @@ import {
   type PointerEvent as RPointerEvent,
 } from "react";
 import { getAudioEngine } from "@/lib/audio-engine";
+import { getMetronome } from "@/lib/metronome";
 
-// 1차 메인 화면 + 2차-3: 타임라인(위치/seek) + 구간 반복(A~B).
-// 분리 결과 두 트랙은 이미 엔진에 주입돼 있다. 재생/볼륨/프리셋은 기존 그대로.
+// 1차 메인 화면 + 2차-3(타임라인·구간 반복) + 2차-4(메트로놈).
+// 2차-5: 기능 무변경, 레이아웃만 — 곡 컨트롤 2열(주) + 메트로놈 접이식(곁다리)
+// → 평소(접힘) 한 화면에 들어오고, 곡 컨트롤이 시각적으로 주가 된다.
 const PRESETS = [
   { label: "드럼없이", value: 0 },
   { label: "가이드", value: 25 },
@@ -23,6 +25,20 @@ function fmt(sec: number): string {
   const s = Math.floor(sec);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
+
+const labelStyle: CSSProperties = {
+  fontSize: "13px",
+  fontWeight: 500,
+  letterSpacing: "0.02em",
+  color: "var(--color-text-secondary)",
+};
+const bigNumStyle: CSSProperties = {
+  fontSize: "28px",
+  fontWeight: 600,
+  lineHeight: 1,
+  color: "var(--color-accent)",
+  fontVariantNumeric: "tabular-nums",
+};
 
 export default function PracticeView({
   fileName,
@@ -45,6 +61,13 @@ export default function PracticeView({
   const [loopOn, setLoopOn] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
+  // 메트로놈 — 곡 재생과 독립(별도 모듈, 컨텍스트만 공유)
+  const metroRef = useRef(getMetronome());
+  const [metroOn, setMetroOn] = useState(false);
+  const [metroExpanded, setMetroExpanded] = useState(false); // 접이식(기본 접힘)
+  const [bpm, setBpm] = useState(120);
+  const [beatsPerBar, setBeatsPerBar] = useState(4);
+  const [metroVol, setMetroVol] = useState(70);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -56,10 +79,12 @@ export default function PracticeView({
       setIsPlaying(false);
       setPosition(0);
     });
+    const metro = metroRef.current;
     return () => {
       engine.setOnEnded(null);
       engine.stop();
       setIsPlaying(false);
+      metro.stop(); // 연습 화면을 떠나면 메트로놈도 정지
     };
     // 마운트 1회(초기값 반영). 이후는 핸들러가 직접 반영.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -96,6 +121,31 @@ export default function PracticeView({
   function applyVolume(v: number) {
     setDrumVolume(v);
     engineRef.current.setDrumVolume(v / 100);
+  }
+
+  // 메트로놈 핸들러 — 곡 재생/구간반복과 무관(별도 출력 체인)
+  async function toggleMetro() {
+    const m = metroRef.current;
+    const next = !metroOn;
+    setMetroOn(next);
+    if (next) await m.start();
+    else m.stop();
+  }
+  function changeBpm(v: number) {
+    const n = Math.min(240, Math.max(40, Math.round(v)));
+    setBpm(n);
+    metroRef.current.setBpm(n);
+  }
+  function changeBeats(delta: number) {
+    setBeatsPerBar((prev) => {
+      const n = Math.min(7, Math.max(2, prev + delta));
+      metroRef.current.setBeatsPerBar(n);
+      return n;
+    });
+  }
+  function changeMetroVol(v: number) {
+    setMetroVol(v);
+    metroRef.current.setVolume(v / 100);
   }
 
   const tFromClientX = useCallback(
@@ -184,10 +234,11 @@ export default function PracticeView({
       style={{
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
-        gap: "var(--space-8)",
+        gap: "var(--space-6)",
+        width: "100%",
       }}
     >
+      {/* 곡 제목 */}
       <div style={{ textAlign: "center" }}>
         <h2
           style={{
@@ -215,185 +266,443 @@ export default function PracticeView({
         </p>
       </div>
 
-      <button
-        type="button"
-        className="action-btn"
-        data-playing={isPlaying}
-        aria-label={isPlaying ? "정지" : "재생"}
-        onClick={togglePlay}
+      {/* 곡 컨트롤(주) — 2열: 좌 재생/타임라인/구간, 우 드럼 볼륨/프리셋 */}
+      <div
+        style={{
+          display: "flex",
+          gap: "var(--space-8)",
+          alignItems: "flex-start",
+          flexWrap: "wrap",
+          width: "100%",
+        }}
       >
-        {isPlaying ? <StopIcon /> : <PlayIcon />}
-      </button>
-
-      {/* 타임라인 — 곡 전체 + 현재 위치 + A~B 구간. 클릭=seek */}
-      <div style={{ width: "100%" }}>
+        {/* 좌: 트랜스포트(재생/정지 + 타임라인) + 구간 */}
         <div
-          ref={trackRef}
-          role="slider"
-          aria-label="재생 위치"
-          aria-valuemin={0}
-          aria-valuemax={Math.round(duration)}
-          aria-valuenow={Math.round(position)}
-          tabIndex={0}
-          onClick={(e) => seekTo(tFromClientX(e.clientX))}
-          onPointerMove={onMarkerMove}
-          onPointerUp={onMarkerUp}
           style={{
-            position: "relative",
-            height: "28px",
-            cursor: "pointer",
+            flex: "1 1 360px",
+            minWidth: "320px",
             display: "flex",
-            alignItems: "center",
-            touchAction: "none",
+            flexDirection: "column",
+            gap: "var(--space-4)",
           }}
         >
-          {/* 트랙 홈 */}
           <div
             style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              height: "8px",
-              background: "var(--color-surface-inset)",
-              borderRadius: "var(--radius-full)",
+              display: "flex",
+              alignItems: "center",
+              gap: "var(--space-6)",
+              width: "100%",
             }}
-          />
-          {/* A~B 구간(연습 창) — accent-dim */}
-          {rA != null && rB != null && (
+          >
+            <button
+              type="button"
+              className="action-btn"
+              data-playing={isPlaying}
+              aria-label={isPlaying ? "정지" : "재생"}
+              onClick={togglePlay}
+              style={{ flexShrink: 0 }}
+            >
+              {isPlaying ? <StopIcon /> : <PlayIcon />}
+            </button>
+
+            {/* 타임라인 — 곡 전체 + 현재 위치 + A~B 구간. 클릭=seek */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                ref={trackRef}
+                role="slider"
+                aria-label="재생 위치"
+                aria-valuemin={0}
+                aria-valuemax={Math.round(duration)}
+                aria-valuenow={Math.round(position)}
+                tabIndex={0}
+                onClick={(e) => seekTo(tFromClientX(e.clientX))}
+                onPointerMove={onMarkerMove}
+                onPointerUp={onMarkerUp}
+                style={{
+                  position: "relative",
+                  height: "28px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  touchAction: "none",
+                }}
+              >
+                {/* 트랙 홈 */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 0,
+                    right: 0,
+                    height: "8px",
+                    background: "var(--color-surface-inset)",
+                    borderRadius: "var(--radius-full)",
+                  }}
+                />
+                {/* A~B 구간(연습 창) — accent-dim */}
+                {rA != null && rB != null && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: `${pct(rA)}%`,
+                      width: `${Math.max(0, pct(rB) - pct(rA))}%`,
+                      height: "8px",
+                      background: "var(--color-accent-dim)",
+                      borderRadius: "var(--radius-full)",
+                      opacity: loopOn ? 1 : 0.6,
+                    }}
+                  />
+                )}
+                {/* 플레이헤드 — 단 하나의 '살아있는' 요소: accent */}
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `calc(${pct(position)}% - 1px)`,
+                    width: "2px",
+                    height: "18px",
+                    background: "var(--color-accent)",
+                    borderRadius: "1px",
+                  }}
+                />
+                {/* A/B 마커(드래그 미세조정) */}
+                {rA != null && (
+                  <Handle
+                    pos={pct(rA)}
+                    label="A"
+                    onDown={(e) => onMarkerDown("A", e)}
+                  />
+                )}
+                {rB != null && (
+                  <Handle
+                    pos={pct(rB)}
+                    label="B"
+                    onDown={(e) => onMarkerDown("B", e)}
+                  />
+                )}
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  marginTop: "var(--space-2)",
+                  fontSize: "13px",
+                  color: "var(--color-text-secondary)",
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                <span>{fmt(position)}</span>
+                <span>{fmt(duration)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* 구간 지정 + 반복 토글 */}
+          <div style={{ display: "flex", gap: "var(--space-3)" }}>
+            <button type="button" className="preset-btn" onClick={captureA}>
+              구간 A
+            </button>
+            <button type="button" className="preset-btn" onClick={captureB}>
+              구간 B
+            </button>
+            <button
+              type="button"
+              className="preset-btn"
+              aria-pressed={loopOn}
+              disabled={!regionValid}
+              onClick={toggleLoop}
+              title={
+                regionValid ? "A~B 구간만 반복" : "먼저 구간 A·B 를 잡으세요"
+              }
+              style={
+                !regionValid ? { opacity: 0.5, cursor: "default" } : undefined
+              }
+            >
+              구간 반복 {loopOn ? "⟳ 켜짐" : "꺼짐"}
+            </button>
+          </div>
+        </div>
+
+        {/* 우: 드럼 볼륨 + 프리셋 */}
+        <div
+          style={{
+            flex: "1 1 280px",
+            minWidth: "260px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--space-4)",
+          }}
+        >
+          <div style={{ width: "100%" }}>
             <div
               style={{
-                position: "absolute",
-                left: `${pct(rA)}%`,
-                width: `${Math.max(0, pct(rB) - pct(rA))}%`,
-                height: "8px",
-                background: "var(--color-accent-dim)",
-                borderRadius: "var(--radius-full)",
-                opacity: loopOn ? 1 : 0.6,
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+                marginBottom: "var(--space-3)",
               }}
+            >
+              <span style={labelStyle}>드럼 볼륨</span>
+              <span style={bigNumStyle}>{drumVolume}%</span>
+            </div>
+            <input
+              type="range"
+              className="drum-slider"
+              min={0}
+              max={100}
+              value={drumVolume}
+              aria-label="드럼 볼륨"
+              onChange={(e) => applyVolume(Number(e.target.value))}
+              style={{ ["--fill"]: `${drumVolume}%` } as CSSProperties}
             />
-          )}
-          {/* 플레이헤드 — 단 하나의 '살아있는' 요소: accent */}
-          <div
-            style={{
-              position: "absolute",
-              left: `calc(${pct(position)}% - 1px)`,
-              width: "2px",
-              height: "18px",
-              background: "var(--color-accent)",
-              borderRadius: "1px",
-            }}
-          />
-          {/* A/B 마커(드래그 미세조정) */}
-          {rA != null && (
-            <Handle
-              pos={pct(rA)}
-              label="A"
-              onDown={(e) => onMarkerDown("A", e)}
-            />
-          )}
-          {rB != null && (
-            <Handle
-              pos={pct(rB)}
-              label="B"
-              onDown={(e) => onMarkerDown("B", e)}
-            />
-          )}
-        </div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            marginTop: "var(--space-2)",
-            fontSize: "13px",
-            color: "var(--color-text-secondary)",
-            fontVariantNumeric: "tabular-nums",
-          }}
-        >
-          <span>{fmt(position)}</span>
-          <span>{fmt(duration)}</span>
+          </div>
+
+          <div style={{ display: "flex", gap: "var(--space-3)" }}>
+            {PRESETS.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                className="preset-btn"
+                aria-pressed={drumVolume === p.value}
+                onClick={() => applyVolume(p.value)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      {/* 구간 지정 + 반복 토글 */}
-      <div style={{ display: "flex", gap: "var(--space-3)" }}>
-        <button type="button" className="preset-btn" onClick={captureA}>
-          구간 A
-        </button>
-        <button type="button" className="preset-btn" onClick={captureB}>
-          구간 B
-        </button>
+      {/* 메트로놈 — 곁다리: 접이식. 평소 한 줄(켜짐 시 인디케이터), 눌러 펼침 */}
+      <div
+        style={{
+          width: "100%",
+          borderTop: "1px solid var(--color-border)",
+          paddingTop: "var(--space-3)",
+        }}
+      >
         <button
           type="button"
-          className="preset-btn"
-          aria-pressed={loopOn}
-          disabled={!regionValid}
-          onClick={toggleLoop}
-          title={
-            regionValid
-              ? "A~B 구간만 반복"
-              : "먼저 구간 A·B 를 잡으세요"
-          }
-          style={!regionValid ? { opacity: 0.5, cursor: "default" } : undefined}
-        >
-          구간 반복 {loopOn ? "⟳ 켜짐" : "꺼짐"}
-        </button>
-      </div>
-
-      <div style={{ width: "100%" }}>
-        <div
+          aria-expanded={metroExpanded}
+          aria-controls="metro-panel"
+          onClick={() => setMetroExpanded((v) => !v)}
           style={{
+            width: "100%",
             display: "flex",
-            alignItems: "baseline",
-            justifyContent: "space-between",
-            marginBottom: "var(--space-3)",
+            alignItems: "center",
+            justifyContent: "flex-start",
+            gap: "var(--space-4)",
+            background: "none",
+            border: "none",
+            padding: "var(--space-2) 0",
+            cursor: "pointer",
+            // 곡 컨트롤보다는 덜 강조하되 또렷이 읽히게(muted→secondary)
+            color: "var(--color-text-secondary)",
           }}
         >
+          {/* 라벨 + 펼침/접힘 표시를 한 덩어리로(눌러서 펼치는 묶음) */}
           <span
             style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "var(--space-2)",
               fontSize: "13px",
               fontWeight: 500,
               letterSpacing: "0.02em",
-              color: "var(--color-text-secondary)",
             }}
           >
-            드럼 볼륨
+            메트로놈
+            <span aria-hidden style={{ fontSize: "12px" }}>
+              {metroExpanded ? "▴ 접기" : "▾ 펼치기"}
+            </span>
           </span>
-          <span
-            style={{
-              fontSize: "28px",
-              fontWeight: 600,
-              lineHeight: 1,
-              color: "var(--color-accent)",
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            {drumVolume}%
-          </span>
-        </div>
-        <input
-          type="range"
-          className="drum-slider"
-          min={0}
-          max={100}
-          value={drumVolume}
-          aria-label="드럼 볼륨"
-          onChange={(e) => applyVolume(Number(e.target.value))}
-          style={{ ["--fill"]: `${drumVolume}%` } as CSSProperties}
-        />
-      </div>
+          {metroOn && (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "var(--space-1)",
+                color: "var(--color-accent)",
+                fontVariantNumeric: "tabular-nums",
+                fontSize: "13px",
+              }}
+            >
+              <span
+                style={{
+                  width: "6px",
+                  height: "6px",
+                  borderRadius: "var(--radius-full)",
+                  background: "var(--color-accent)",
+                }}
+              />
+              켜짐 · {bpm} BPM
+            </span>
+          )}
+        </button>
 
-      <div style={{ display: "flex", gap: "var(--space-3)" }}>
-        {PRESETS.map((p) => (
-          <button
-            key={p.label}
-            type="button"
-            className="preset-btn"
-            aria-pressed={drumVolume === p.value}
-            onClick={() => applyVolume(p.value)}
+        {metroExpanded && (
+          <div
+            id="metro-panel"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "var(--space-4)",
+              paddingTop: "var(--space-4)",
+            }}
           >
-            {p.label}
-          </button>
-        ))}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <span style={labelStyle}>곡과 별개로 박자 클릭</span>
+              <button
+                type="button"
+                className="preset-btn"
+                aria-pressed={metroOn}
+                onClick={toggleMetro}
+              >
+                {metroOn ? "⏻ 켜짐" : "꺼짐"}
+              </button>
+            </div>
+
+            <div style={{ width: "100%" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: "var(--space-3)",
+                }}
+              >
+                <span style={labelStyle}>BPM</span>
+                <span
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "var(--space-3)",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="preset-btn"
+                    aria-label="BPM 감소"
+                    onClick={() => changeBpm(bpm - 1)}
+                  >
+                    −
+                  </button>
+                  <span
+                    style={{
+                      ...bigNumStyle,
+                      minWidth: "3ch",
+                      textAlign: "center",
+                    }}
+                  >
+                    {bpm}
+                  </span>
+                  <button
+                    type="button"
+                    className="preset-btn"
+                    aria-label="BPM 증가"
+                    onClick={() => changeBpm(bpm + 1)}
+                  >
+                    ＋
+                  </button>
+                </span>
+              </div>
+              <input
+                type="range"
+                className="drum-slider"
+                min={40}
+                max={240}
+                value={bpm}
+                aria-label="BPM"
+                onChange={(e) => changeBpm(Number(e.target.value))}
+                style={
+                  {
+                    ["--fill"]: `${((bpm - 40) / 200) * 100}%`,
+                  } as CSSProperties
+                }
+              />
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                gap: "var(--space-6)",
+                alignItems: "center",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-3)",
+                }}
+              >
+                <span style={labelStyle}>박자</span>
+                <button
+                  type="button"
+                  className="preset-btn"
+                  aria-label="박자 감소"
+                  onClick={() => changeBeats(-1)}
+                >
+                  −
+                </button>
+                <span
+                  style={{
+                    fontSize: "15px",
+                    color: "var(--color-text)",
+                    fontVariantNumeric: "tabular-nums",
+                    minWidth: "2ch",
+                    textAlign: "center",
+                  }}
+                >
+                  {beatsPerBar}
+                </span>
+                <button
+                  type="button"
+                  className="preset-btn"
+                  aria-label="박자 증가"
+                  onClick={() => changeBeats(1)}
+                >
+                  ＋
+                </button>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    justifyContent: "space-between",
+                    marginBottom: "var(--space-2)",
+                  }}
+                >
+                  <span style={labelStyle}>메트로놈 볼륨</span>
+                  <span
+                    style={{
+                      fontSize: "13px",
+                      color: "var(--color-text-secondary)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {metroVol}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  className="drum-slider"
+                  min={0}
+                  max={100}
+                  value={metroVol}
+                  aria-label="메트로놈 볼륨"
+                  onChange={(e) => changeMetroVol(Number(e.target.value))}
+                  style={{ ["--fill"]: `${metroVol}%` } as CSSProperties}
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
