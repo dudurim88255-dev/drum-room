@@ -3,10 +3,14 @@
 > 세션 시작 시 이 파일을 먼저 읽는다. "미검증 가정" 항목은 코드 작업 전 검증한다.
 
 ## 현 단계
-- **1차 완성·커밋됨**: 4-C `151510d`, 4-D `26d01a6`(스펙트럼 분기 복원).
-  사용자 실앱 슬라이더 청취 확인 후 커밋 완료.
-- **2차-1 진행 중 — 분리 속도(WASM 단일→멀티스레드): 구현·품질검증
-  완료, 실속도는 사용자 브라우저 측정 대기(미커밋).** 아래 [2차-1] 참조.
+- **1차 완성·커밋**: 4-C `151510d`, 4-D `26d01a6`.
+- **2차-1 완성·커밋** `f0c832f`: WASM 멀티스레드(사용자 실앱 20분→8분30초
+  확인, 품질 비트 동일). 회귀(mp3 거부=jsep 자기호스팅 누락) 동봉 수정.
+- **2차-2 분리 결과 자동 저장(IndexedDB): 구현·Phase C 완료, 미커밋.**
+  같은 곡 재투입 시 8분30초 재분리 스킵. 아래 [2차-2].
+- **2차-3 타임라인+구간반복: 구현·Phase C 완료, 미커밋.** 아래 [2차-3].
+  seek stale-onended 경쟁 버그도 발견·수정. 커밋 게이트 = 사용자가 실앱에서
+  2차-2(같은 곡 즉시·음질 동일)+2차-3(타임라인/A-B 반복) 확인 → 함께/순서 커밋.
 - ⚠ 이전 "코드/배선/분리/버퍼매핑 버그 없음" 결론은 **반증**됐었고, root
   cause(하이브리드 절반만 사용)는 4-D 로 해결됨(아래 [버그조사]·4-D 참조).
 
@@ -82,6 +86,103 @@
   `coi_probe.mjs`/`app_repro.mjs`(CDP 충실 재현 — 회귀 회귀검사용 보존),
   `coi-test.html`/`_coi_test.mp3` 는 public 에서 삭제됨. dev 서버는
   next.config 변경 시 재기동 필요(현재 `besiiz4wo` 신헤더로 가동 중).
+
+## [2차-2] 분리 결과 자동 저장 (구현·Phase C 검증 완료, 미커밋)
+- 목적: 같은 곡 재투입 시 ~8분30초 재분리 스킵 → 즉시 연습. 분리/worker/
+  istft/엔진 로직 무수정 — 저장 계층 **추가만**.
+- Phase A 설계 승인(상한 1.2GB·gzip). 구현:
+  - `src/lib/result-cache.ts`(신규): IndexedDB `drum-room-results`,
+    스토어 **2분리** `meta`(작음: LRU/목록/lastUsedAt touch) + `blobs`(큼:
+    불변) — lastUsedAt 갱신 시 100MB 블롭 재기록 회피(승인 설계 의도 유지,
+    성능상 우위). 키=`hashFile`=SHA-256(파일 바이트)(파일명 무관). 무손실
+    Float32 + `CompressionStream('gzip')`(미지원 시 원시 폴백, `compressed`
+    플래그). `PIPELINE_VERSION="htdemucs+istft-4d"` 불일치 시 캐시 무효+
+    재분리(4-D 식 파이프라인 변경 대비). LRU `capBytes`(min(1.2GB, quota
+    0.5))·`evictToFit`·QuotaExceededError 시 최오래곡 evict 재시도→실패면
+    조용히 포기.
+  - `SeparatingView`: `source = {file} | {cached}`. 파일이면 해시→캐시
+    조회: 히트 시 디코드/모델/분리 **전부 스킵**, 저장 Float32→AudioBuffer
+    (engine.getContext)→`loadBuffers`→done. 미스면 기존 흐름 후 best-effort
+    `saveSong`(try/catch — 실패해도 분리·연습 계속). cached source 는 바로
+    복원. 디코드 실패 분류(AudioDecodeError) 유지.
+  - `page.tsx`: `file` → `source` 일반화 + `handleOpenCached`. PracticeView
+    제목 = file.name | cached.name.
+  - `UploadView`: 드롭존 아래 "저장된 곡" 목록(있을 때만 — DESIGN.md 단순함:
+    비면 미표시). 이름 클릭=즉시 그 곡 연습, ×=삭제. DESIGN.md 토큰만 사용.
+- **Phase C 검증(전부 PASS)**:
+  - 무손상 단위 `model-prep/cache_roundtrip_test.mjs`: Float32→gzip→gunzip
+    **비트 동일**(mismatch 0, maxAbs 0) → 복원==원본 분리, 구조적 보장.
+  - 충실 재현 `model-prep/cache_repro.mjs`(헤드리스 Chrome+CDP, 실제 앱):
+    ① 첫 mp3 → 드럼 분리 0→33→67%→결과 저장 중→연습, IDB meta1/blobs1
+       생성(worker 추론 O, jsep O). ② 같은 mp3 재투입 → "파일 확인 중"→
+       연습, **worker 추론 0(sepSeen=false, jsep 요청 0)** = 재분리 스킵.
+    ③ 목록 클릭 → "저장된 곡 불러오는 중"→연습, 분리 0. ④ × → IDB
+       meta0/blobs0. ⑤ console 에러 0. tsc/eslint 0.
+  - ⚠ 머신 미검증(정직 표기): 1.2GB 초과 LRU evict·QuotaExceeded 폴백은
+    실데이터 >1.2GB 필요라 헤드리스 미실행 — 코드 구현+graceful 경로
+    존재(구성상 정당), 실사용 확인 필요. 저장실패 흐름지속도 코드상 보장
+    (best-effort try/catch), 강제 트리거 미실행.
+- 변경: `src/lib/result-cache.ts`(신규), `src/components/{SeparatingView,
+  UploadView}.tsx`, `src/app/page.tsx`. (worker/istft/engine/separation
+  -engine 무변 — separation-engine 의 AudioDecodeError 는 회귀수정분 그대로.)
+- 커밋 게이트: 사용자가 실앱에서 (a) 같은 곡 2번째 즉시 열림, (b) 저장
+  곡 재생·슬라이더가 처음과 동일(음질 무손상 체감), (c) 목록 동작 확인 →
+  커밋. 재현/잔재: `cache_roundtrip_test.mjs`·`cache_repro.mjs`(gitignore
+  model-prep, 회귀검사용 보존). public 임시자산 없음.
+
+## [2차-3] 타임라인 + 구간 반복 (구현·Phase C 완료, 미커밋)
+- 목적: 연습 화면에 ①타임라인(위치/seek) ②A-B 구간 반복 ③곡끝=정지
+  (멋대로 무한반복 안 함). 분리/worker/istft/2차-2 무수정 — 재생측 추가만.
+- Phase A 추적 결과(코드 근거): 엔진은 이미 곡끝 정지(loop 미설정,
+  onended→정지). 사용자 "계속 도는" 체감 = **위치 피드백 부재**(타임라인
+  없음) + 끝나면 항상 0 부터 재생 + (아래) seek 경쟁버그. Phase A 승인.
+- 구현:
+  - `audio-engine.ts`(추가, 기존 API 무파괴): `getDuration/getPosition/
+    seek/setLoopRegion/setLoopEnabled/getLoop`. 위치=ctx.currentTime 기반
+    (`startCtxTime`·`startOffset`·`playhead`). seek=두 소스 동일 when·
+    offset 재시작(싱크). A-B=네이티브 `loop/loopStart/loopEnd`(두 소스
+    동일 → 샘플정확, JS 타이머 없음). 곡끝(loop off)=정지+playhead 0.
+    `stop()`은 위치 보존, `loadBuffers()`는 위치·구간 초기화.
+  - `PracticeView.tsx`(추가): 타임라인(트랙 surface-inset, 구간 accent-dim,
+    플레이헤드 accent 선, A/B 드래그 핸들), 클릭=seek, "구간 A"/"구간 B"
+    =현재 위치 캡처, "구간 반복" 토글(유효구간 전 비활성), rAF 위치 갱신
+    (재생 중만). DESIGN.md 토큰만, 앰버 절제.
+- **추적·수정한 실제 버그(추측 아님, CDP 계측으로 확정)**: seek 가 옛
+  소스 stop 후 `startSources` 가 `manualStop` 을 즉시 false 로 되돌려,
+  옛 소스의 늦은 `onended` 가 "자연 종료" 분기를 타고 **새 재생을 죽이고
+  위치 0 리셋**(stale-callback 경쟁 → 클릭 seek 시 정지·now0). **수정:
+  manualStop 플래그 제거, onended 를 소스 동일성(`this.drumsSource===
+  activeDrums`)으로 가드** — 폐기 소스의 콜백 원천 무시. 교훈: 재시작이
+  생기면 공유 플래그-타이밍 가드는 깨진다 — 인스턴스 동일성으로 가드.
+- **Phase C(CDP 충실 재현 `model-prep/tl_repro.mjs`, 전부 PASS)**:
+  T1 길이=20, T2 위치전진(0→3,재생), T3 클릭seek 50%→정확10, T4 A-B
+  루프=[3↔5]만 진동·wrap·끝 미도달·계속재생, T5 루프중 프리셋(원곡100/
+  드럼없이0)정상·루프유지, T6 루프OFF+곡끝=정지+위치0+재상승없음,
+  console 0. tsc/eslint 0. (헤드리스는 무음 — 두 트랙 샘플 싱크는 동일
+  when/offset/loopStart·End 구성상 보장+기존 dual-start 검증과 동형,
+  실청취는 커밋 게이트. 헤드리스 재생엔 `--autoplay-policy=no-user-
+  gesture-required` 테스트 플래그 필요 — 앱 코드 무관.)
+- 변경: `src/lib/audio-engine.ts`, `src/components/PracticeView.tsx` 만.
+  잔재 0, public 임시자산 0. 재현 보존: `tl_repro.mjs`(gitignore).
+- **2차-3b 재지정 흐름 개선(미커밋, 2차-3 에 포함)**: 루프 중 재생 끊지
+  않고 A 재탭→B 재탭으로 다른 구간을 깨끗이 새로 잡기. 변경:
+  `PracticeView.tsx` captureA=새 선택 시작(loopA=현위치, loopB=null, 엔진
+  미적용 → 옛 구간 루프 계속), captureB=B>A 일 때만 채우고 1회 commit
+  (역전이면 무시 → 교차 상태 구조적 불가, 스왑 제거), 드래그 클램프
+  (A는 B-MIN 까지만 — 순간이동 제거), rA/rB 정렬-스왑 제거, pushRegion
+  삭제. `audio-engine.ts` setLoopRegion: 변경 전 위치를 먼저 구해 새 구간
+  안이면 소스 재생성 없이 라이브 loopStart/loopEnd + 위치회계 rebase,
+  밖일 때만 1회 seek. 버튼 3개 유지(Clear 미추가).
+  - Phase C(`model-prep/tl_regrab.mjs`, 전부 PASS): pendingA=핸들1·옛 루프
+    계속·정지 안 함, regrab_valid=A%<B% 정렬·1회 전환·연속재생·wrap,
+    regrab_invert=B<A 무시(B 마커 안 생김·교차 없음·재생 연속), 콘솔 0.
+    tsc/eslint 0, `next build` 통과. (Phase C 가 실결함—옛 루프 되감김 중
+    B 재탭 시 captureB 무조건 setLoopB 로 교차 저장—을 잡아 가드로 정정.)
+    헤드리스 무음이라 이음매 청취는 커밋 게이트(연속 playing·wrap·콘솔0
+    ·소스 재생성 회피 코드경로로 간접 입증).
+- 커밋 게이트: 사용자가 실앱에서 타임라인 진행/클릭 seek/A-B 반복 매끄러움
+  ·두 트랙 싱크/루프OFF 곡끝 정지/루프중 볼륨·**재생 끊지 않고 A→B
+  재지정** 확인 → 2차-2 와 함께/순서 커밋.
 
 ## [버그조사] "연습 화면 드럼 슬라이더가 오디오에 안 먹는다" (실제 곡)
 사용자 보고: 실제 곡("타오르는 밤의 끝") 분리·재생 정상, 그러나 드럼 볼륨
