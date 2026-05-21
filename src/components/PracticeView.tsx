@@ -10,6 +10,10 @@ import {
 } from "react";
 import { getAudioEngine } from "@/lib/audio-engine";
 import { getMetronome } from "@/lib/metronome";
+import { getBpmAnalyzer, type BpmState } from "@/lib/bpm-analyzer";
+
+const COUNTIN_PREF_KEY = "drumroom.countIn"; // 전역 사용자 선호(곡 무관)
+const COUNTIN_BARS = 2; // 카운트인 마디 수 기본
 
 // 1차 메인 화면 + 2차-3(타임라인·구간 반복) + 2차-4(메트로놈).
 // 2차-5: 기능 무변경, 레이아웃만 — 곡 컨트롤 2열(주) + 메트로놈 접이식(곁다리)
@@ -65,9 +69,23 @@ export default function PracticeView({
   const metroRef = useRef(getMetronome());
   const [metroOn, setMetroOn] = useState(false);
   const [metroExpanded, setMetroExpanded] = useState(false); // 접이식(기본 접힘)
-  const [bpm, setBpm] = useState(120);
-  const [beatsPerBar, setBeatsPerBar] = useState(4);
   const [metroVol, setMetroVol] = useState(70);
+  // 2차-6: BPM/박자/다운비트는 bpm-analyzer 가 단일 진실원천(자동 감지 +
+  // 사용자 보정 + 캐시 영구 저장 모두 그쪽). 이 컴포넌트는 구독 + 위임만.
+  // 싱글턴이라 매 렌더마다 같은 인스턴스 반환 — ref 불필요(렌더 중 ref 접근
+  // 경고 회피).
+  const analyzer = getBpmAnalyzer();
+  const [bpmState, setBpmState] = useState<BpmState>(() => analyzer.getState());
+  // 카운트인 — 전역 선호(localStorage), 진행 중 상태, 취소 핸들.
+  const [countInEnabled, setCountInEnabledState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const v = window.localStorage?.getItem(COUNTIN_PREF_KEY);
+    return v == null ? true : v === "1";
+  });
+  const [countInActive, setCountInActive] = useState(false);
+  const countInCancelRef = useRef<(() => void) | null>(null);
+  // 탭 템포 — 최근 탭 시각들(s), 3초 무탭 시 리셋
+  const tapTimesRef = useRef<number[]>([]);
 
   useEffect(() => {
     const engine = engineRef.current;
@@ -80,15 +98,28 @@ export default function PracticeView({
       setPosition(0);
     });
     const metro = metroRef.current;
+    // 2차-6: BPM 분석/사용자 보정 상태 구독(자동 결과 도착 또는 영구 보정값
+    // 로드 시 UI 가 따라온다 — 분석은 SeparatingView 에서 이미 가동됨).
+    const unsubBpm = analyzer.subscribe(setBpmState);
     return () => {
       engine.setOnEnded(null);
       engine.stop();
       setIsPlaying(false);
-      metro.stop(); // 연습 화면을 떠나면 메트로놈도 정지
+      metro.stop();
+      countInCancelRef.current?.(); // 진행 중 카운트인 깔끔히 취소
+      countInCancelRef.current = null;
+      unsubBpm();
     };
-    // 마운트 1회(초기값 반영). 이후는 핸들러가 직접 반영.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // BPM/박자가 바뀌면 메트로놈(사용자 토글로 울리는 쪽) 도 즉시 동기화
+  useEffect(() => {
+    metroRef.current.setBpm(bpmState.bpm);
+  }, [bpmState.bpm]);
+  useEffect(() => {
+    metroRef.current.setBeatsPerBar(bpmState.beatsPerBar);
+  }, [bpmState.beatsPerBar]);
 
   // 재생 중에만 rAF 로 위치 갱신(정지 시 멈춤 — 불필요한 렌더 방지)
   useEffect(() => {
@@ -108,14 +139,51 @@ export default function PracticeView({
 
   async function togglePlay() {
     const engine = engineRef.current;
+    // 1) 카운트인 중 = 정지 버튼 → 취소(곡 시작 안 함, 위치 보존)
+    if (countInActive) {
+      countInCancelRef.current?.();
+      countInCancelRef.current = null;
+      setCountInActive(false);
+      return;
+    }
+    // 2) 곡 재생 중 → 정지(위치 보존, 기존 동작)
     if (engine.isPlaying) {
       engine.stop();
       setIsPlaying(false);
       setPosition(engine.getPosition());
-    } else {
-      await engine.play();
-      setIsPlaying(engine.isPlaying);
+      return;
     }
+    // 3) 정지 상태에서 시작
+    if (!countInEnabled) {
+      await engine.play(); // 카운트인 비활성 — 즉시 재생(기존 동작)
+      setIsPlaying(engine.isPlaying);
+      return;
+    }
+    // 4) 카운트인 켜짐 — 곡 박자 그리드에 스냅 후 카운트인→곡 정렬
+    const bpm = bpmState.bpm;
+    const beats = bpmState.beatsPerBar;
+    const downbeat = bpmState.downbeatOffsetSec;
+    const P = 60 / bpm;
+    const playhead = engine.getPosition();
+    const dur = engine.getDuration();
+    // snapOffset = 다운비트 기준 다음 박 경계(=곡의 1박 ↔ 마지막 카운트 박)
+    const k = Math.ceil(Math.max(0, playhead - downbeat) / P);
+    const snapOffset = Math.min(dur, downbeat + k * P);
+    setCountInActive(true);
+    const handle = metroRef.current.playCountIn({
+      bpm,
+      beatsPerBar: beats,
+      bars: COUNTIN_BARS,
+      onDone: (songStart) => {
+        setCountInActive(false);
+        countInCancelRef.current = null;
+        void engineRef.current.playAt(songStart, snapOffset).then(() => {
+          setIsPlaying(engineRef.current.isPlaying);
+          setPosition(snapOffset);
+        });
+      },
+    });
+    countInCancelRef.current = handle.cancel;
   }
 
   function applyVolume(v: number) {
@@ -131,21 +199,48 @@ export default function PracticeView({
     if (next) await m.start();
     else m.stop();
   }
+  // 모든 보정은 analyzer 로 위임(=곡별 영구 저장 + emit → 메트로놈/UI 동기).
   function changeBpm(v: number) {
-    const n = Math.min(240, Math.max(40, Math.round(v)));
-    setBpm(n);
-    metroRef.current.setBpm(n);
+    analyzer.setUserBpm(v);
   }
   function changeBeats(delta: number) {
-    setBeatsPerBar((prev) => {
-      const n = Math.min(7, Math.max(2, prev + delta));
-      metroRef.current.setBeatsPerBar(n);
-      return n;
-    });
+    analyzer.setBeatsPerBar(bpmState.beatsPerBar + delta);
   }
   function changeMetroVol(v: number) {
     setMetroVol(v);
     metroRef.current.setVolume(v / 100);
+  }
+  // 2차-6 보정 액션
+  function bpmHalf() {
+    analyzer.setUserBpm(bpmState.bpm / 2);
+  }
+  function bpmDouble() {
+    analyzer.setUserBpm(bpmState.bpm * 2);
+  }
+  function setDownbeatHere() {
+    analyzer.setDownbeatOffsetSec(engineRef.current.getPosition());
+  }
+  function tapTempo() {
+    // 클릭 시각(초) 누적, 3초 이상 간격이면 리셋. 최근 4~6개 평균 → BPM.
+    const now = performance.now() / 1000;
+    const arr = tapTimesRef.current;
+    if (arr.length > 0 && now - arr[arr.length - 1] > 3) arr.length = 0;
+    arr.push(now);
+    if (arr.length > 6) arr.shift();
+    if (arr.length >= 2) {
+      const span = arr[arr.length - 1] - arr[0];
+      const bpm = (60 * (arr.length - 1)) / span;
+      analyzer.setUserBpm(bpm);
+    }
+  }
+  function toggleCountIn() {
+    const next = !countInEnabled;
+    setCountInEnabledState(next);
+    try {
+      window.localStorage?.setItem(COUNTIN_PREF_KEY, next ? "1" : "0");
+    } catch {
+      /* localStorage 무가용 환경 — 세션 한정 동작 */
+    }
   }
 
   const tFromClientX = useCallback(
@@ -297,12 +392,15 @@ export default function PracticeView({
             <button
               type="button"
               className="action-btn"
-              data-playing={isPlaying}
-              aria-label={isPlaying ? "정지" : "재생"}
+              data-playing={isPlaying || countInActive}
+              aria-label={
+                isPlaying || countInActive ? "정지" : "재생"
+              }
+              title={countInActive ? "카운트인 — 다시 누르면 취소" : undefined}
               onClick={togglePlay}
               style={{ flexShrink: 0 }}
             >
-              {isPlaying ? <StopIcon /> : <PlayIcon />}
+              {isPlaying || countInActive ? <StopIcon /> : <PlayIcon />}
             </button>
 
             {/* 타임라인 — 곡 전체 + 현재 위치 + A~B 구간. 클릭=seek */}
@@ -533,7 +631,7 @@ export default function PracticeView({
                   background: "var(--color-accent)",
                 }}
               />
-              켜짐 · {bpm} BPM
+              켜짐 · {bpmState.bpm} BPM
             </span>
           )}
         </button>
@@ -548,6 +646,7 @@ export default function PracticeView({
               paddingTop: "var(--space-4)",
             }}
           >
+            {/* 메트로놈 on/off (사용자가 곡과 별개로 클릭 듣고 싶을 때) */}
             <div
               style={{
                 display: "flex",
@@ -566,6 +665,7 @@ export default function PracticeView({
               </button>
             </div>
 
+            {/* BPM: 큰 숫자 + −/＋ + ×2/÷2. 아래에 감지 라벨(자동값과 다를 때). */}
             <div style={{ width: "100%" }}>
               <div
                 style={{
@@ -573,6 +673,8 @@ export default function PracticeView({
                   alignItems: "center",
                   justifyContent: "space-between",
                   marginBottom: "var(--space-3)",
+                  flexWrap: "wrap",
+                  gap: "var(--space-3)",
                 }}
               >
                 <span style={labelStyle}>BPM</span>
@@ -581,13 +683,14 @@ export default function PracticeView({
                     display: "flex",
                     alignItems: "center",
                     gap: "var(--space-3)",
+                    flexWrap: "wrap",
                   }}
                 >
                   <button
                     type="button"
                     className="preset-btn"
                     aria-label="BPM 감소"
-                    onClick={() => changeBpm(bpm - 1)}
+                    onClick={() => changeBpm(bpmState.bpm - 1)}
                   >
                     −
                   </button>
@@ -598,15 +701,33 @@ export default function PracticeView({
                       textAlign: "center",
                     }}
                   >
-                    {bpm}
+                    {bpmState.bpm}
                   </span>
                   <button
                     type="button"
                     className="preset-btn"
                     aria-label="BPM 증가"
-                    onClick={() => changeBpm(bpm + 1)}
+                    onClick={() => changeBpm(bpmState.bpm + 1)}
                   >
                     ＋
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-btn"
+                    aria-label="BPM 절반"
+                    title="절반/두 배 오감지 보정"
+                    onClick={bpmHalf}
+                  >
+                    ÷2
+                  </button>
+                  <button
+                    type="button"
+                    className="preset-btn"
+                    aria-label="BPM 두 배"
+                    title="절반/두 배 오감지 보정"
+                    onClick={bpmDouble}
+                  >
+                    ×2
                   </button>
                 </span>
               </div>
@@ -615,22 +736,44 @@ export default function PracticeView({
                 className="drum-slider"
                 min={40}
                 max={240}
-                value={bpm}
+                value={bpmState.bpm}
                 aria-label="BPM"
                 onChange={(e) => changeBpm(Number(e.target.value))}
                 style={
                   {
-                    ["--fill"]: `${((bpm - 40) / 200) * 100}%`,
+                    ["--fill"]: `${((bpmState.bpm - 40) / 200) * 100}%`,
                   } as CSSProperties
                 }
               />
+              {/* 자동 감지 부가 표시 — 사용자값과 다르거나 분석 중·실패일 때만 */}
+              {(bpmState.status === "pending" ||
+                bpmState.status === "failed" ||
+                (bpmState.bpmDetected != null &&
+                  bpmState.bpmDetected !== bpmState.bpm)) && (
+                <p
+                  style={{
+                    margin: "var(--space-2) 0 0",
+                    fontSize: "12px",
+                    color: "var(--color-text-muted)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {bpmState.status === "pending"
+                    ? "BPM 분석 중…"
+                    : bpmState.status === "failed"
+                      ? "BPM 자동 감지 실패 — 수동으로 맞춰 주세요"
+                      : `감지: ${bpmState.bpmDetected} BPM`}
+                </p>
+              )}
             </div>
 
+            {/* 박자 + 다운비트(여기를 첫 박) */}
             <div
               style={{
                 display: "flex",
                 gap: "var(--space-6)",
                 alignItems: "center",
+                flexWrap: "wrap",
               }}
             >
               <div
@@ -658,7 +801,7 @@ export default function PracticeView({
                     textAlign: "center",
                   }}
                 >
-                  {beatsPerBar}
+                  {bpmState.beatsPerBar}
                 </span>
                 <button
                   type="button"
@@ -669,7 +812,62 @@ export default function PracticeView({
                   ＋
                 </button>
               </div>
-              <div style={{ flex: 1 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "var(--space-3)",
+                }}
+              >
+                <span style={labelStyle}>
+                  첫 박:{" "}
+                  <span
+                    style={{
+                      color: "var(--color-text)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {fmt(bpmState.downbeatOffsetSec)}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  className="preset-btn"
+                  onClick={setDownbeatHere}
+                  title="현재 재생 위치를 곡의 첫 박으로 — 카운트인 정렬용"
+                >
+                  여기를 첫 박
+                </button>
+              </div>
+            </div>
+
+            {/* 탭 템포 + 카운트인 토글 + 메트로놈 볼륨 */}
+            <div
+              style={{
+                display: "flex",
+                gap: "var(--space-6)",
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                type="button"
+                className="preset-btn"
+                onClick={tapTempo}
+                title="박자에 맞춰 눌러서 BPM 설정"
+              >
+                탭 템포
+              </button>
+              <button
+                type="button"
+                className="preset-btn"
+                aria-pressed={countInEnabled}
+                onClick={toggleCountIn}
+                title={`재생 전 ${COUNTIN_BARS}마디 카운트인`}
+              >
+                카운트인 {countInEnabled ? "⏻ 켜짐" : "꺼짐"}
+              </button>
+              <div style={{ flex: 1, minWidth: "180px" }}>
                 <div
                   style={{
                     display: "flex",

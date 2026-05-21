@@ -35,8 +35,9 @@ class Metronome {
     this.out = out;
   }
 
-  /** 한 박 클릭을 정확한 시각에 예약(일회용 osc+gain, 끝나면 정리). */
-  private scheduleClick(time: number, accent: boolean): void {
+  /** 한 박 클릭을 정확한 시각에 예약(일회용 osc+gain, 끝나면 정리).
+   * @returns 생성된 OscillatorNode (카운트인 취소 시 미발화분 stop 용도). */
+  private scheduleClick(time: number, accent: boolean): OscillatorNode {
     const ctx = this.ctx!;
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
@@ -54,6 +55,7 @@ class Metronome {
       osc.disconnect();
       g.disconnect();
     };
+    return osc;
   }
 
   /** [now, now+SCHEDULE_AHEAD] 안의 박을 모두 예약하고 다음 박 계산. */
@@ -94,6 +96,57 @@ class Metronome {
   setVolume(v01: number): void {
     this.volume = Math.min(1, Math.max(0, v01));
     if (this.out) this.out.gain.value = this.volume * MAX_GAIN;
+  }
+
+  /**
+   * 카운트인: N마디(=bars*beatsPerBar 박) 클릭을 미리 예약하고, 마지막 박
+   * 다음 박 시각(=곡 첫 박이 되어야 하는 ctx 시각)을 onDone 으로 통지.
+   * onDone 콜백은 그 시각보다 약간 앞당겨 호출되므로 caller 가
+   * audio-engine.playAt(songStartCtx, offset) 로 Web Audio 정밀 예약 가능.
+   * 메트로놈 사용자 on/off(start/stop) 와 별개 트리거 — 그것에 영향 없음.
+   *
+   * @returns cancel(): 미발화 클릭 stop + onDone 발화 차단.
+   */
+  playCountIn(opts: {
+    bpm: number;
+    beatsPerBar: number;
+    bars: number;
+    onDone: (songStartCtxTime: number) => void;
+  }): { cancel: () => void } {
+    this.ensureNodes();
+    const ctx = this.ctx!;
+    const P = 60 / Math.min(240, Math.max(40, opts.bpm));
+    const beats = Math.max(1, opts.bars) * Math.min(7, Math.max(2, opts.beatsPerBar));
+    const t0 = ctx.currentTime + 0.1; // 첫 클릭 살짝 미래에서 시작(스케줄 여유)
+    const oscs: OscillatorNode[] = [];
+    for (let i = 0; i < beats; i++) {
+      const t = t0 + i * P;
+      const accent = i % opts.beatsPerBar === 0;
+      oscs.push(this.scheduleClick(t, accent));
+    }
+    const songStart = t0 + beats * P; // 마지막 박의 다음 박 = 곡 1박
+    let cancelled = false;
+    // 곡 시작 50ms 전에 콜백 → caller 가 playAt 으로 정확 예약(WA 정밀)
+    const leadSec = Math.max(0, songStart - ctx.currentTime - 0.05);
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      opts.onDone(songStart);
+    }, leadSec * 1000);
+    return {
+      cancel: () => {
+        if (cancelled) return;
+        cancelled = true;
+        clearTimeout(timer);
+        const now = ctx.currentTime;
+        for (const o of oscs) {
+          try {
+            o.stop(now); // 아직 안 울린 osc 무력화(이미 끝난 건 무시됨)
+          } catch {
+            /* 이미 끝남 — 무시 */
+          }
+        }
+      },
+    };
   }
 
   isRunning(): boolean {

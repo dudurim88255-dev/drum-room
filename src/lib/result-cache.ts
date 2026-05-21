@@ -26,6 +26,12 @@ export type SongMeta = {
   createdAt: number;
   lastUsedAt: number;
   byteSize: number; // 압축 후 4채널 합(저장 실측 footprint)
+  // 2차-6: BPM/박자/다운비트(옵션, 호환). bpm=사용 값(사용자 보정 반영),
+  // bpmDetected=자동 감지 원본(불변). 없으면 분석 미수행 또는 보정 전.
+  bpm?: number;
+  bpmDetected?: number;
+  beatsPerBar?: number;
+  downbeatOffsetSec?: number;
 };
 
 type BlobRec = {
@@ -255,6 +261,39 @@ export async function listSongs(): Promise<SongMeta[]> {
     return metas.sort((a, b) => b.lastUsedAt - a.lastUsedAt); // 최근 먼저
   } catch {
     return [];
+  }
+}
+
+/**
+ * 메타만 부분 갱신(블롭 무관, 작은 쓰기). 2차-6: BPM/박자/다운비트
+ * 보정값 영구 저장 + 분석 결과 메타 추가에 사용. lastUsedAt 도 동시 갱신.
+ */
+export async function updateSongMeta(
+  hash: string,
+  patch: Partial<SongMeta>,
+): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(META, "readwrite");
+  const cur = (await idbReq(
+    tx.objectStore(META).get(hash) as IDBRequest<SongMeta | undefined>,
+  )) as SongMeta | undefined;
+  if (!cur) return; // 해당 곡 메타가 없으면 무시(블롭 없이 메타만 만들지 않음)
+  const next: SongMeta = { ...cur, ...patch, lastUsedAt: Date.now() };
+  tx.objectStore(META).put(next);
+  await txDone(tx);
+}
+
+/** 단일 곡 메타 조회(BPM 캐시 히트 판정 등에 사용). */
+export async function getSongMeta(hash: string): Promise<SongMeta | null> {
+  try {
+    const db = await openDb();
+    const tx = db.transaction(META, "readonly");
+    const m = (await idbReq(
+      tx.objectStore(META).get(hash) as IDBRequest<SongMeta | undefined>,
+    )) as SongMeta | undefined;
+    return m ?? null;
+  } catch {
+    return null;
   }
 }
 

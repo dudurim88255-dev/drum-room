@@ -166,7 +166,7 @@ class AudioEngine {
    * 구간 반복이 켜져 있으면 두 소스에 동일 loopStart/End 설정 →
    * 네이티브 샘플 정확 반복(JS 타이머 없음, A↔B 끊김·드리프트 없음).
    */
-  private startSources(offset: number): void {
+  private startSources(when: number, offset: number): void {
     const ctx = this.ctx!;
     const drumsSource = ctx.createBufferSource();
     const backingSource = ctx.createBufferSource();
@@ -197,15 +197,14 @@ class AudioEngine {
       this.endedCb?.();
     };
 
-    const startAt = ctx.currentTime + 0.1;
-    drumsSource.start(startAt, offset);
-    backingSource.start(startAt, offset);
+    drumsSource.start(when, offset);
+    backingSource.start(when, offset);
 
     this.drumsSource = drumsSource;
     this.backingSource = backingSource;
-    this.startCtxTime = startAt;
+    this.startCtxTime = when;
     this.startOffset = offset;
-    this.lastStartArgs = { drums: startAt, backing: startAt };
+    this.lastStartArgs = { drums: when, backing: when };
   }
 
   /** 플레이헤드(또는 구간 A)에서 두 트랙 동시 재생 시작. */
@@ -221,7 +220,30 @@ class AudioEngine {
     if (this.hasValidLoop() && (offset < this.loopA || offset >= this.loopB)) {
       offset = this.loopA; // 구간 반복이면 구간 안에서 시작
     }
-    this.startSources(offset);
+    this.startSources(ctx.currentTime + 0.1, offset);
+    this.playing = true;
+  }
+
+  /**
+   * 2차-6 카운트인 정렬용: 카운트인 마지막 박 다음 ctx 시각에 정확히
+   * 두 트랙을 dual-start. 외부에서 ctx 시각을 결정해 음악적으로 맞춘다.
+   * @param when ctx.currentTime 기준 절대 시각(미래여야 함)
+   * @param offset 곡 안 시작 위치(초). 미지정 시 현재 플레이헤드.
+   */
+  async playAt(when: number, offset?: number): Promise<void> {
+    this.ensureContext();
+    if (!this.isLoaded() || this.playing) return;
+    const ctx = this.ctx!;
+    if (ctx.state === "suspended") await ctx.resume();
+    let off = Math.min(
+      Math.max(offset ?? this.playhead, 0),
+      this.getDuration(),
+    );
+    if (this.hasValidLoop() && (off < this.loopA || off >= this.loopB)) {
+      off = this.loopA;
+    }
+    this.playhead = off;
+    this.startSources(Math.max(when, ctx.currentTime + 0.02), off);
     this.playing = true;
   }
 
@@ -289,7 +311,7 @@ class AudioEngine {
         /* 무시 */
       }
       this.cleanupSources();
-      this.startSources(pos); // 새 활성 소스 → 옛 소스 onended 는 무효
+      this.startSources(this.ctx!.currentTime + 0.1, pos); // 새 활성 소스
     }
   }
 

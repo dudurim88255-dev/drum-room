@@ -10,6 +10,7 @@ import {
   saveSong,
   type RestoredSong,
 } from "@/lib/result-cache";
+import { getBpmAnalyzer } from "@/lib/bpm-analyzer";
 
 // 분리 중 화면. 2차-2: 먼저 결과 캐시(IndexedDB)를 확인 — 같은 곡이면
 // ~8분30초 재분리를 건너뛰고 저장된 트랙을 즉시 재생 엔진에 주입.
@@ -67,6 +68,12 @@ export default function SeparatingView({
         const r = await getCachedSong(source.hash);
         if (!r) throw new Error("저장된 곡을 찾을 수 없습니다");
         injectRestored(r);
+        // 2차-6: BPM 분석/사용자 보정 메타 동기화(캐시 히트면 worker 미가동)
+        void getBpmAnalyzer().setCurrentSong(source.hash, {
+          drumsL: r.dL,
+          drumsR: r.dR,
+          sampleRate: r.sampleRate,
+        });
         finish();
         return;
       }
@@ -80,6 +87,12 @@ export default function SeparatingView({
       if (cached) {
         setUi({ headline: "이미 분리된 곡 — 바로 시작", pct: 100, detail: "" });
         injectRestored(cached);
+        // 2차-6: 캐시 히트 — 메타에 BPM 있으면 즉시 ready, 없으면 분석 1회.
+        void getBpmAnalyzer().setCurrentSong(hash, {
+          drumsL: cached.dL,
+          drumsR: cached.dR,
+          sampleRate: cached.sampleRate,
+        });
         finish();
         return;
       }
@@ -121,6 +134,13 @@ export default function SeparatingView({
       // 4) 재생 엔진 주입 + 결과 저장(best-effort: 실패해도 흐름 계속)
       engine.loadBuffers(drumsBuffer, backingBuffer);
       setUi({ headline: "결과 저장 중", pct: 100, detail: "다음엔 즉시 시작" });
+      // 2차-6: BPM 분석을 백그라운드로(saveSong 후 메타에 합쳐짐). slice() 로
+      // 독립 Float32 사본 떼어 worker 로 transferable(원본 AudioBuffer 무영향).
+      void getBpmAnalyzer().setCurrentSong(hash, {
+        drumsL: drumsBuffer.getChannelData(0).slice(0),
+        drumsR: drumsBuffer.getChannelData(1).slice(0),
+        sampleRate: drumsBuffer.sampleRate,
+      });
       try {
         await saveSong(
           { hash, name: source.file.name },
