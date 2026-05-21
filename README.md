@@ -1,36 +1,90 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# drum-room (드럼룸)
 
-## Getting Started
+원곡 음원을 넣으면 **브라우저 안에서 AI가 드럼 트랙을 분리**하고, 원곡을
+재생하면서 그 안의 **드럼 볼륨을 0~100%로 조절하며 그 위에 직접 드럼을
+치는** 연습 웹앱입니다.
 
-First, run the development server:
+> "드럼을 제거한 반주(MR)"를 만드는 도구가 아니라, 원곡을 재생하면서 그
+> 안의 드럼 볼륨만 조절하는 연습 도구입니다. 드럼 0%면 드럼 없이, 25%면
+> 가이드로 작게, 100%면 원곡 그대로.
+
+곡 파일은 **브라우저 밖으로 나가지 않습니다.** 분리·재생·분석이 모두 내
+컴퓨터(브라우저) 안에서 이뤄집니다. 서버로 음원을 올리지 않습니다.
+
+---
+
+## 기능
+
+- **드럼 분리** — Demucs(htdemucs) 모델을 onnxruntime-web(WASM)으로
+  브라우저에서 실행. 곡당 한 번만 분리합니다.
+- **분리 결과 자동 저장** — 한 번 분리한 곡은 브라우저(IndexedDB)에
+  저장돼, 같은 곡을 다시 넣으면 재분리 없이 즉시 연습으로 갑니다.
+- **타임라인 + 구간 반복(A–B)** — 곡 위치를 보고 클릭으로 이동, 어려운
+  구간(A~B)만 골라 반복 연습.
+- **메트로놈** — 정밀 박자 클릭음(접이식 패널). 강박/약박 구분, BPM·박자·
+  볼륨 조절.
+- **자동 BPM 감지 + 카운트인** — 분리된 드럼으로 곡 BPM을 자동 추정
+  (Essentia.js), ×2/÷2·탭 템포·"여기를 첫 박"으로 보정. 재생 전 2마디
+  카운트인으로 첫 박부터 정확히 들어갑니다.
+- **곡 바꾸기** — 연습 중 언제든 다른 곡으로.
+
+---
+
+## 사용법
+
+1. 곡 파일(mp3 / wav / flac / m4a)을 화면에 드래그하거나 클릭해서 선택.
+2. **처음 한 번**, 분리 엔진(AI 모델, 약 160MB)을 내려받습니다. 그다음부터는
+   받지 않습니다.
+3. 분리가 끝나면 연습 화면으로. 드럼 볼륨 슬라이더·구간 반복·메트로놈·
+   카운트인을 쓰며 그 위에 드럼을 칩니다.
+4. 한 번 분리한 곡은 다음에 다시 넣으면 **즉시** 열립니다.
+
+### 처음 분리 시간 안내
+- 분리는 곡 길이에 비례합니다. 보급형 노트북(예: 인텔 N95) 기준 **3~4분
+  곡이 약 4~9분** 정도 걸릴 수 있고, 환경(CPU 코어 수)에 따라 달라집니다.
+- 처음 한 번만 그렇고, 같은 곡은 이후 즉시 열립니다.
+
+---
+
+## 지원 환경
+
+- **데스크톱 Chrome 권장.** 브라우저 안 멀티스레드 분리를 위해
+  `crossOriginIsolated`(COOP/COEP) 환경이 필요합니다.
+- 지원 파일 형식: **mp3 / wav / flac / m4a**.
+- 모바일·일부 브라우저는 접속 시 안내 화면을 표시합니다(1차 지원 범위 밖).
+
+---
+
+## 개발 / 배포
+
+- **Next.js 16 (App Router)** · React 19 · TypeScript · Tailwind CSS.
+- 분리: onnxruntime-web(WASM, 멀티스레드) · BPM 분석: Essentia.js(WASM).
+- 멀티스레드(SharedArrayBuffer)를 위해 모든 응답에 COOP/COEP 헤더를
+  싣습니다(`next.config.ts`의 `headers()` + 배포용 `vercel.json`).
+- ort/Essentia WASM 자산은 같은 출처로 자기호스팅합니다(`public/ort/`,
+  `public/essentia/`) — COEP 환경에서 안전하게 로드되도록.
+- 환경변수(.env)는 필요 없습니다.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev      # 개발 서버 (http://localhost:3200)
+npm run build    # 프로덕션 빌드
+npm run start    # 프로덕션 실행
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **소스 코드:** https://github.com/dudurim88255-dev/drum-room
+- **배포:** 위 GitHub 레포를 Vercel에 연결하면 됩니다.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+---
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 라이선스
 
-## Learn More
+이 프로젝트는 **GNU Affero General Public License v3.0 (AGPL-3.0)** 으로
+배포됩니다. 전문은 [`LICENSE`](./LICENSE)를 참고하세요.
 
-To learn more about Next.js, take a look at the following resources:
+BPM 분석에 쓰는 Essentia.js가 AGPL-3.0이라, 이를 사용하는 drum-room 전체가
+AGPL-3.0을 따릅니다. 사용 중인 외부 라이브러리의 라이선스는
+[`NOTICE`](./NOTICE)에 정리돼 있습니다.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+AGPL-3.0에 따라 전체 소스를 공개합니다:
+**https://github.com/dudurim88255-dev/drum-room**

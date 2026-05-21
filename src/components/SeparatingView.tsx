@@ -217,6 +217,21 @@ export default function SeparatingView({
         {ui.detail}
       </p>
 
+      {/* 첫 방문 모델 다운로드일 때만 — 처음 한 번뿐임을 안내(친절) */}
+      {ui.headline.startsWith("모델 다운로드") && (
+        <p
+          style={{
+            fontSize: "13px",
+            lineHeight: 1.6,
+            color: "var(--color-text-muted)",
+            margin: "var(--space-4) 0 0",
+          }}
+        >
+          분리 엔진(AI 모델)을 처음 한 번만 내려받습니다 · 약 160MB ·
+          다음부터는 받지 않아요.
+        </p>
+      )}
+
       <p
         style={{
           fontSize: "14px",

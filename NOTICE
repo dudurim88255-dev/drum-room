@@ -1,0 +1,35 @@
+drum-room — Third-Party Notices
+================================
+
+drum-room 자체는 GNU AGPL-3.0-or-later 로 배포됩니다(LICENSE 참고).
+아래는 drum-room 이 사용하는 외부 오픈소스와 그 라이선스입니다.
+
+런타임 핵심
+-----------
+- onnxruntime-web (Microsoft) — MIT License
+  브라우저 WASM 추론 엔진(드럼 분리 모델 실행).
+  https://github.com/microsoft/onnxruntime
+
+- Essentia.js (Music Technology Group, Universitat Pompeu Fabra)
+  — GNU Affero General Public License v3.0 (AGPL-3.0)
+  자동 BPM 감지(PercivalBpmEstimator). 이 의존성이 AGPL 이라
+  drum-room 전체가 AGPL-3.0 을 따릅니다.
+  https://github.com/MTG/essentia.js
+
+- htdemucs / Demucs (Meta AI Research) — MIT License
+  드럼 분리 모델(htdemucs, Hybrid Transformer Demucs v4)의 원 가중치.
+  ONNX 변환본은 외부 공개 레포(gianlourbano/demucs-onnx)에서 1회
+  내려받아 브라우저 캐시에 저장합니다(레포에 모델 파일을 포함하지 않음).
+  https://github.com/facebookresearch/demucs
+
+프레임워크 / UI
+---------------
+- Next.js (Vercel) — MIT License
+- React, React-DOM (Meta) — MIT License
+- Tailwind CSS — MIT License
+- TypeScript (Microsoft) — Apache License 2.0
+- Pretendard (길형진/orioncactus) — SIL Open Font License 1.1
+  웹폰트(jsDelivr CDN 로드).
+
+각 라이선스 전문은 해당 프로젝트 저장소를 참고하세요. 본 표기는 편의를
+위한 요약이며, 누락·오기 발견 시 알려 주시면 정정합니다.

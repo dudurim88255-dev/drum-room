@@ -3,12 +3,11 @@
 > 세션 시작 시 이 파일을 먼저 읽는다. "미검증 가정" 항목은 코드 작업 전 검증한다.
 
 ## ⏸ 세션 종료 — 재개 지점
-- 마지막 커밋: `05490fd` (2차-5). **2차-6(자동 BPM 감지 + 카운트인)
-  구현·Phase C 완료, 미커밋** — 사용자 실앱 확인 후 커밋. 아래 [2차-6].
-- **2차-7 연습 중 다른 곡으로(구현·Phase C 완료, 미커밋)** — 아래 [2차-7].
-- 커밋 게이트: 사용자 실앱에서 (a)자동 BPM 감지·수동 보정(×2/÷2/탭/
-  여기를 첫 박) (b)카운트인 → 곡 첫 박 정렬 (c)기존 기능 무영향
-  (d)연습 화면 우상단 "다른 곡" 버튼으로 §4 시나리오 모두 깔끔히 동작 확인.
+- 마지막 커밋: `0f0c123` (2차-7). 1차·2차-1~7 전부 커밋 완료.
+- **배포 점검(Vercel 전): 구현·검증 완료, 미커밋** — 아래 [배포 점검].
+  커밋 게이트: 사용자 확인 후 `chore: Vercel 배포 준비 …`.
+- 다음(사람이 직접): GitHub `dudurim88255-dev/drum-room` 푸시 →
+  Vercel 새 프로젝트 → 레포 연결 → deploy → URL 외부 점검자 공유.
 
 ## 현 단계
 - **1차 완성·커밋**: 4-C `151510d`, 4-D `26d01a6`.
@@ -342,6 +341,37 @@
 - 커밋 게이트: 사용자 실앱에서 §4 모든 시나리오 + 한 화면 보존 확인 →
   `feat: 2차-7 - 연습 중 다른 곡으로` 커밋(2차-6 동반 또는 순서대로).
   재현: `change_song_repro.mjs`(gitignore model-prep).
+
+## [배포 점검] Vercel 배포 전 (구현·검증 완료, 미커밋)
+- 목적: 외부 점검자 접근용 Vercel 배포 전, 빌드·헤더·라이선스·문서·잔재
+  정리. 기능 로직(분리/구간반복/메트로놈/카운트인/BPM/캐시) 무수정.
+- 빌드 형태: `output:'export'` 아님 = 서버 빌드. `next build`+`next start`
+  로 검증. Vercel 에선 next.config `headers()` 가 적용되고 `vercel.json`
+  도 동시 적용(이중 보장). dev 용 headers() 그대로 둠.
+- **검증(production 빌드 next start :3201, 헤드리스 실측)**:
+  - `npm run build` 무에러(tsc/eslint 0).
+  - 헤더: `/`·`/ort/*.wasm`·`/essentia/*.wasm` 전부 COOP same-origin /
+    COEP require-corp, wasm full size.
+  - **crossOriginIsolated=true**, SharedArrayBuffer 가용(멀티스레드 OK).
+  - Pretendard(jsDelivr CDN) COEP 하 정상 로드(css+woff2 200, 차단 0)
+    → document.fonts.check 통과. networkFailures·consoleErrors 0.
+  - (전체 분리 흐름 기능은 2차-1~7 dev CDP 로 검증 완료, 코드 동일 —
+    prod 는 빌드/헤더/격리/폰트/콘솔만 추가 실측.)
+- 변경/추가 파일:
+  - `LICENSE`(신규): AGPL-3.0 **공식 전문**(gnu.org 원본, 34523B).
+  - `NOTICE`(신규): 외부 OSS 라이선스(onnxruntime MIT·Essentia AGPL·
+    htdemucs MIT·Next/React/Tailwind MIT·TS Apache·Pretendard OFL).
+  - `README.md`: 친절한 한글로 교체(무엇·기능·사용법·모델 160MB/분리
+    시간·지원 환경·로컬 처리·개발/배포·라이선스).
+  - `package.json`: `"license": "AGPL-3.0-or-later"`.
+  - `SeparatingView.tsx`: 모델 다운로드 단계에 "처음 한 번 ~160MB" 친절
+    안내 1줄 추가(다운로드 phase 에서만, DESIGN 토큰).
+  - 잔재 삭제: `public/test-audio/`(wav 3개 ~10MB, 앱 미사용 — src 참조
+    0, 주석만), 기본 svg 5개(file/globe/next/vercel/window — 미사용).
+- 점검 결과: 하드코딩 로컬경로 0, .env 사용 0(README 에 불필요 명시),
+  public/ort·essentia 자산 정상, .gitignore(model-prep/.next/out) 정상,
+  favicon 존재(src/app/favicon.ico), layout 메타(title/description ko).
+- 재현: `model-prep/prod_check.mjs`(gitignore).
 
 ## [버그조사] "연습 화면 드럼 슬라이더가 오디오에 안 먹는다" (실제 곡)
 사용자 보고: 실제 곡("타오르는 밤의 끝") 분리·재생 정상, 그러나 드럼 볼륨
