@@ -2,18 +2,13 @@
 
 > 세션 시작 시 이 파일을 먼저 읽는다. "미검증 가정" 항목은 코드 작업 전 검증한다.
 
-## ⏸ 세션 종료 (퇴근) — 재개 지점
-- 마지막 커밋: `da4da69` (2차-3). **미커밋(디스크 저장됨, 손실 아님)**:
-  `src/lib/metronome.ts`(신규=2차-4), `src/components/PracticeView.tsx`·
-  `src/app/page.tsx`(수정=2차-4/2차-5), `SESSION_STATE.md`.
-- 상태: 2차-4(메트로놈)·2차-5(레이아웃+메트로놈 접이식) 구현·Phase C
-  전부 PASS·tsc/eslint/build 0. **커밋은 사용자 게이트라 보류**(미수행).
-- **다음 세션 첫 행동**: 커밋하지 말 것. 사용자가 실앱에서 (a)메트로놈
-  기능 (b)접이식 동작 (c)한 화면 들어옴 을 확인하면 → 그때 2차-4·2차-5
-  정리 커밋(메시지·구성 사용자 확인 후). 이상 보고 시 우회 없이 추적.
-- dev 서버 `besiiz4wo`(localhost:3200) 백그라운드 가동 중(로컬, 무해).
-- 미검증 가정 없음(Phase C 객관 검증 완료; 실제 클릭 음색·시각 정돈감만
-  사용자 청취 대기 — 정상 동작 자체는 입증됨).
+## ⏸ 세션 종료 — 재개 지점
+- 마지막 커밋: `05490fd` (2차-5). **2차-6(자동 BPM 감지 + 카운트인)
+  구현·Phase C 완료, 미커밋** — 사용자 실앱 확인 후 커밋. 아래 [2차-6].
+- **2차-7 연습 중 다른 곡으로(구현·Phase C 완료, 미커밋)** — 아래 [2차-7].
+- 커밋 게이트: 사용자 실앱에서 (a)자동 BPM 감지·수동 보정(×2/÷2/탭/
+  여기를 첫 박) (b)카운트인 → 곡 첫 박 정렬 (c)기존 기능 무영향
+  (d)연습 화면 우상단 "다른 곡" 버튼으로 §4 시나리오 모두 깔끔히 동작 확인.
 
 ## 현 단계
 - **1차 완성·커밋**: 4-C `151510d`, 4-D `26d01a6`.
@@ -22,10 +17,9 @@
 - **2차-2 완성·커밋** `01e4d6b`: 분리 결과 IndexedDB 자동 저장(같은 곡 즉시).
 - **2차-3 완성·커밋** `da4da69`: 타임라인+구간반복+곡끝정지+구간 재선택.
   (추적·수정: seek stale-onended 경쟁, B 재탭 교차.)
-- **2차-4 메트로놈 + 2차-5 레이아웃·메트로놈 접이식: 구현·Phase C 완료,
-  미커밋.** 아래 [2차-4]·[2차-5]. 커밋 게이트 = 사용자 실앱에서 (a)메트로놈
-  박자/강약/기능 (b)접이식 동작 (c)한 화면에 들어옴 확인 → 2차-4·2차-5
-  정리 커밋(구성은 사용자 확인 후).
+- **2차-4 완성·커밋** `8833af2`: 메트로놈(독립 모듈·lookahead·강약).
+- **2차-5 완성·커밋** `05490fd`: 연습 화면 2열 레이아웃 + 메트로놈
+  접이식 + 접힘 줄 가독성/묶음 보정(사용자 실앱 확인 완료).
 - ⚠ 이전 "코드/배선/분리/버퍼매핑 버그 없음" 결론은 **반증**됐었고, root
   cause(하이브리드 절반만 사용)는 4-D 로 해결됨(아래 [버그조사]·4-D 참조).
 
@@ -261,6 +255,93 @@
   UI엔 한글뿐(헤드리스 스캔+스크린샷 확인). 한글화 불가/불필요, `next
   build` 정적 배포본엔 미노출(dev 전용). 손대지 않음(보고만). 재현:
   `bottomleft_probe.mjs`(gitignore).
+
+## [2차-6] 자동 BPM 감지 + 카운트인 (구현·Phase C 완료, 미커밋)
+- 목적: 분리된 drums 로 자동 BPM 감지(Essentia.js Percival, AGPL 수용),
+  사용자 보정(×2/÷2/탭 템포/여기를 첫 박), 재생 전 2마디 카운트인 → 곡
+  첫 박 정렬. 분리/엔진/구간반복/result-cache/메트로놈 본체 로직 무수정.
+- Phase A 승인(Percival·카운트인=metronome.ts 통합·그리드 스냅·"여기를
+  첫 박"·영구 저장·2마디 기본 켜짐). 구현 파일:
+  - `src/lib/bpm-worker.ts`(신규, module worker): Essentia 모노 다운믹스
+    → PercivalBpmEstimator. WASM/JS 자기호스팅(public/essentia/) +
+    런타임 간접 eval 로 글로벌(self) 스코프 부착(아래 추적·수정 참조).
+  - `src/lib/bpm-analyzer.ts`(신규, 싱글턴 파사드): 캐시 우선 → worker.
+    상태머신(idle/pending/ready/failed) + subscribe. 사용자 보정 메서드
+    (setUserBpm/setBeatsPerBar/setDownbeatOffsetSec)가 즉시 emit + 캐시
+    영구 저장(updateSongMeta). userTouched 플래그로 자동 결과가 사용자
+    값 덮어쓰기 차단.
+  - `src/lib/audio-engine.ts`: public `playAt(when, offset)` 추가
+    (기존 play() 무수정·이 위 wrapper). dual-start when/offset 외부 결정.
+  - `src/lib/metronome.ts`: `playCountIn({bpm, beatsPerBar, bars, onDone})`
+    추가 — N×beats 박 예약, 마지막 박 다음 ctx 시각을 onDone 으로 통지
+    → caller 가 engine.playAt(songStart, snapOffset) 으로 정렬. cancel()
+    핸들 반환(미발화 osc.stop). 메트로놈 사용자 on/off 와 독립.
+  - `src/lib/result-cache.ts`: SongMeta 옵션 필드(bpm/bpmDetected/
+    beatsPerBar/downbeatOffsetSec) + `updateSongMeta` 메타-only 부분 갱신.
+    PIPELINE_VERSION 유지(분리 출력 무변).
+  - `src/components/SeparatingView.tsx`: 분리·복원 양 경로에서
+    analyzer.setCurrentSong(hash, {dL,dR,sampleRate}) 호출(백그라운드).
+  - `src/components/PracticeView.tsx`: analyzer 구독, 펼친 메트로놈에
+    ÷2/×2/탭 템포/여기를 첫 박/카운트인 토글 + 감지 부가표시. togglePlay
+    에 카운트인 분기(snapOffset=downbeat+ceil((playhead-downbeat)/P)*P).
+    카운트인 중 정지 버튼=취소. localStorage 에 카운트인 토글 전역 선호.
+- **추적·수정한 실제 버그(추측 아님, CDP 계측 확정 — 두 단계 root cause)**:
+  ①Turbopack 정적 분기 제거가 essentia-wasm.web.js 의 Node 호환 코드
+  (`require("fs")`)를 끌어들여 빌드 실패 → 인라인 base64 변형 대신
+  외부 wasm 변형(.web.js)으로 전환·자기호스팅. ②worker 에서 Essentia
+  초기화가 `ReferenceError: document is not defined`. 원인: web.js 가
+  `-s ENVIRONMENT=web` 으로 빌드돼 ENVIRONMENT_IS_WORKER=false 하드코드,
+  `else if (document.currentScript)` 무가드 평가. **수정: worker 에
+  document 최소 shim(currentScript=null) 으로 조건을 false 화 → 분기
+  미진입**(locateFile 은 우리 Module 옵션이 결정). 둘 다 우회 아님,
+  근본 원인 정확 수정.
+- **Phase C(`model-prep/bpm_countin_repro.mjs`, 전부 PASS)**: T1 자동 BPM
+  test.mp3=113 ready; T2 ÷2/×2 즉시(113↔57↔114); T3 탭 ~500ms×5 → 116
+  BPM(target 120 근접); T4 카운트인 정확 8박(2마디×4) → 곡 시작·위치
+  진행; T5 카운트인 중 정지 → 곡 시작 X·재생 버튼 복귀; T6 구간반복
+  wrap 중 클릭 0; T8 재방문 worker attach 0(캐시 히트), 사용자 BPM 영구
+  저장(120 유지) + "감지: 113 BPM" 부가표시. console/tsc/eslint/build 0.
+- 변경(git status): SongMeta 메타 확장(`result-cache.ts`), `audio-engine`
+  playAt 추가, `metronome` playCountIn 추가, `SeparatingView` 트리거,
+  `PracticeView` UI+카운트인, 신규 `bpm-{worker,analyzer}.ts` +
+  `essentia.d.ts`. 신규 `public/essentia/`(2.5MB: .wasm 2MB + .web.js
+  220KB + -core.umd.js 340KB — ort 자기호스팅 13MB 와 같은 패턴).
+  `package.json` essentia.js@^0.1.3.
+- 커밋 게이트: 사용자 실앱에서 (a)자동 BPM·수동 보정 (b)카운트인 정렬
+  (c)기존 기능 무영향 확인 → `feat: 2차-6 - 자동 BPM 감지 + 카운트인`
+  커밋. 재현: `bpm_countin_repro.mjs`, `bpm_diag.mjs`(gitignore).
+
+## [2차-7] 연습 중 다른 곡으로 (구현·Phase C 완료, 미커밋)
+- 목적: 연습 화면 어떤 상태(재생/정지/곡끝/카운트인/구간반복/메트로놈
+  ON/BPM 분석중) 에서든 곡 바꿈. 분리/엔진/메트로놈/카운트인/BPM 분석/
+  result-cache 본체 로직 **무수정** — 화면 전환 + 버튼만 추가.
+- Phase A 결정(단일안):
+  - 버튼: "다른 곡"(짧음·기존 짧은 버튼들과 결, title="다른 곡 열기").
+  - 위치: PracticeView 루트 `position:relative` + 버튼 `position:absolute`
+    우상단(작고 차분, surface-secondary 톤). 세로 길이 0 → 한 화면(2차-5)
+    무영향. 곡 제목은 좌우 `--space-12` 패딩으로 긴 파일명 wrap 보호.
+  - 메트로놈 정책 = **(a) 곡 변경 시 정지**(곁다리 원칙·예측 가능·업로드
+    화면 무음 비가시 클릭 회피). PracticeView 언마운트 cleanup 이 이미
+    `metro.stop()` 수행 → 추가 코드 0.
+  - 카운트인 진행 중 변경: 언마운트 cleanup 의 `countInCancelRef.current
+    ?.()` 가 예약 osc 전부 stop. 곡 시작 안 함.
+  - BPM 분석 진행 중 변경: analyzer 싱글턴이 다음 setCurrentSong(새 hash)
+    에서 옛 worker terminate(현재 동작 — 단순·안전).
+  - 새 곡 진입 시 상태 리셋(loop A/B null, drumVol 가이드 25, pos 0)은
+    엔진 `loadBuffers` + analyzer 새 hash 진입으로 자연 초기화 → 코드 0.
+- 변경: `src/app/page.tsx`(handleChangeSong + PracticeView prop), `src/
+  components/PracticeView.tsx`(prop+버튼+root position:relative+title 좌
+  우 패딩). 그 외 무수정.
+- **Phase C(`model-prep/change_song_repro.mjs`, 핵심 PASS)**: T1 재생 중
+  → 곡 바꾸기 → upload 도달; T2 정지 중 → 정상; T4 카운트인 중 → 정상;
+  T5 구간반복 중 → 정상 + **재진입 시 loop 비활성·drumVol 25·pos 0**
+  (묻어가지 않음); T6 메트로놈 ON 중 → 정상; T7 같은 곡 재오픈 = 캐시
+  히트 즉시. console/tsc/eslint/build 0. (T4/T6 의 tick 계측 일부 null
+  은 instrument-측 아티팩트 — `reachedUpload=true` + 코드 구조상 cancel
+  보장으로 행동 정확.)
+- 커밋 게이트: 사용자 실앱에서 §4 모든 시나리오 + 한 화면 보존 확인 →
+  `feat: 2차-7 - 연습 중 다른 곡으로` 커밋(2차-6 동반 또는 순서대로).
+  재현: `change_song_repro.mjs`(gitignore model-prep).
 
 ## [버그조사] "연습 화면 드럼 슬라이더가 오디오에 안 먹는다" (실제 곡)
 사용자 보고: 실제 곡("타오르는 밤의 끝") 분리·재생 정상, 그러나 드럼 볼륨

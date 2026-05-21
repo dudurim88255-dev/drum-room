@@ -53,6 +53,14 @@ export default function Home() {
     setStage("upload");
   }, []);
 
+  // 2차-7: 연습 중 다른 곡으로. PracticeView 언마운트 cleanup 이 자동으로
+  // 재생/카운트인/메트로놈 정지·구독 해제 → 새 곡 진입 시 자연 초기화.
+  const handleChangeSong = useCallback(() => {
+    setSepError(null);
+    setSource(null);
+    setStage("upload");
+  }, []);
+
   const title =
     source?.kind === "file"
       ? source.file.name
@@ -158,6 +166,7 @@ export default function Home() {
                 setDrumVolume={setDrumVolume}
                 isPlaying={isPlaying}
                 setIsPlaying={setIsPlaying}
+                onChangeSong={handleChangeSong}
               />
             )}
           </>

@@ -50,12 +50,14 @@ export default function PracticeView({
   setDrumVolume,
   isPlaying,
   setIsPlaying,
+  onChangeSong,
 }: {
   fileName: string | null;
   drumVolume: number;
   setDrumVolume: (v: number) => void;
   isPlaying: boolean;
   setIsPlaying: (v: boolean) => void;
+  onChangeSong: () => void;
 }) {
   const engineRef = useRef(getAudioEngine());
   const [duration, setDuration] = useState(0);
@@ -327,14 +329,46 @@ export default function PracticeView({
   return (
     <div
       style={{
+        position: "relative", // 2차-7: "다른 곡" 절대위치 anchor
         display: "flex",
         flexDirection: "column",
         gap: "var(--space-6)",
         width: "100%",
       }}
     >
-      {/* 곡 제목 */}
-      <div style={{ textAlign: "center" }}>
+      {/* 2차-7: 곡 컨트롤이 주, 곡 바꾸기는 보조 — 우상단 작고 차분하게.
+          누르면 page.tsx 가 stage=upload 로 전환 → PracticeView 언마운트
+          cleanup 이 재생/카운트인/메트로놈 정지를 자동 처리(곡 바뀌니까
+          위치 보존도 불필요). 한 화면(2차-5) 보존 — 세로 길이 0. */}
+      <button
+        type="button"
+        onClick={onChangeSong}
+        title="다른 곡 열기"
+        style={{
+          position: "absolute",
+          top: 0,
+          right: 0,
+          background: "none",
+          border: "1px solid var(--color-border)",
+          color: "var(--color-text-secondary)",
+          fontSize: "12px",
+          padding: "var(--space-2) var(--space-3)",
+          borderRadius: "var(--radius-full)",
+          cursor: "pointer",
+          zIndex: 1,
+        }}
+      >
+        다른 곡
+      </button>
+
+      {/* 곡 제목 — 우측 버튼과 안 겹치게 좌우 여백 확보(긴 파일명 wrap 보호) */}
+      <div
+        style={{
+          textAlign: "center",
+          paddingLeft: "var(--space-12)",
+          paddingRight: "var(--space-12)",
+        }}
+      >
         <h2
           style={{
             fontSize: "22px",
