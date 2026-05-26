@@ -71,6 +71,7 @@ export default function Home() {
   return (
     <main
       style={{
+        position: "relative",
         minHeight: "100dvh",
         display: "flex",
         flexDirection: "column",
@@ -80,16 +81,58 @@ export default function Home() {
         gap: "var(--space-8)",
       }}
     >
+      {/* 워드마크 — 골드 그라데이션, 좌측 상단. 도구 정체성. */}
       <span
+        aria-label="drum.room"
+        className="gold-text"
         style={{
-          fontSize: "13px",
-          fontWeight: 500,
-          letterSpacing: "0.08em",
-          color: "var(--color-text-muted)",
+          position: "absolute",
+          top: "var(--space-8)",
+          left: "var(--space-8)",
+          fontSize: "20px",
+          fontWeight: 600,
+          lineHeight: 1,
+          letterSpacing: "-0.01em",
         }}
       >
-        DRUM-ROOM
+        drum.room
       </span>
+
+      {/* 소개 카피 — 헤드라인 자리에 단독으로. 시각적 1순위 텍스트.
+          골드 그라데이션으로 워드마크와 정체성 묶기. upload 단계 전용. */}
+      {stage === "upload" && supported !== false && (
+        <div
+          style={{
+            width: "100%",
+            maxWidth: "560px",
+            textAlign: "center",
+            wordBreak: "keep-all",
+          }}
+        >
+          <h1
+            className="gold-text"
+            style={{
+              fontSize: "30px",
+              fontWeight: 600,
+              lineHeight: 1.3,
+              letterSpacing: "-0.01em",
+              margin: 0,
+            }}
+          >
+            AI가 곡에서 드럼을 분리하고, 원곡 위에서 연습합니다.
+          </h1>
+          <p
+            style={{
+              fontSize: "14px",
+              lineHeight: 1.6,
+              color: "var(--color-text-muted)",
+              margin: "var(--space-6) 0 0",
+            }}
+          >
+            파일은 브라우저 밖으로 나가지 않습니다.
+          </p>
+        </div>
+      )}
 
       <div
         style={{

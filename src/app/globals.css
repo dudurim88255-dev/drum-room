@@ -11,6 +11,11 @@
   --color-accent-hover: #f4b45e;
   --color-accent-dim: #8a6230;
 
+  /* Gold identity — 흥권 스튜디오 시그니처(spm-redesign btn-primary·Hero·BrandSpotlight 그라데이션과 정합).
+     워드마크와 소개 카피의 "정체성" 색. 기능 액센트(앰버)와 역할 분리, 절제해 사용. */
+  --color-gold-light: #8c6e3c;
+  --color-gold-dark: #5c4422;
+
   /* Surfaces — 어두운 콘솔 층위 */
   --color-bg: #0e0f12;
   --color-surface: #17191d;
@@ -63,6 +68,19 @@ body {
 /* drum-room components (DESIGN.md section 4).
    hover / active / pseudo-element cannot be inline styles, so they live here.
    All colors reference CSS variables (no raw HEX). */
+
+/* gold identity text — 워드마크·소개 카피에만. background-clip: text 로 글리프에 그라데이션. */
+.gold-text {
+  background-image: linear-gradient(
+    135deg,
+    var(--color-gold-light),
+    var(--color-gold-dark)
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
 
 /* drum volume slider: track 8px, thumb 24px */
 .drum-slider {

@@ -123,16 +123,6 @@ export default function UploadView({
         >
           mp3 / wav / flac / m4a
         </p>
-        <p
-          style={{
-            fontSize: "14px",
-            lineHeight: 1.6,
-            color: "var(--color-text-muted)",
-            margin: "var(--space-1) 0 0",
-          }}
-        >
-          파일은 브라우저 밖으로 안 나갑니다
-        </p>
       </div>
 
       {/* 저장된 곡 — 있을 때만 (DESIGN.md: 비면 아무것도 안 보임) */}
