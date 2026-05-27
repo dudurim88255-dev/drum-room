@@ -81,22 +81,49 @@ export default function Home() {
         gap: "var(--space-8)",
       }}
     >
-      {/* 워드마크 — 골드 그라데이션, 좌측 상단. 도구 정체성. */}
-      <span
-        aria-label="drum.room"
-        className="gold-text"
+      {/* 워드마크 + BPM 메타 — 좌측 상단. 도구/콘솔 정체성.
+          BPM 은 1차에서 정적 dash. 추후 분리 결과에서 감지값 주입 가능. */}
+      <div
         style={{
           position: "absolute",
           top: "var(--space-8)",
           left: "var(--space-8)",
-          fontSize: "20px",
-          fontWeight: 600,
-          lineHeight: 1,
-          letterSpacing: "-0.01em",
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-3)",
         }}
       >
-        drum.room
-      </span>
+        <span
+          aria-label="drum.room"
+          className="gold-text"
+          style={{
+            fontSize: "20px",
+            fontWeight: 600,
+            lineHeight: 1,
+            letterSpacing: "-0.01em",
+          }}
+        >
+          drum.room
+        </span>
+        <span
+          aria-label="BPM"
+          style={{
+            fontFamily:
+              "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+            fontSize: "13px",
+            fontWeight: 500,
+            lineHeight: 1,
+            letterSpacing: "0.02em",
+            color: "var(--color-text-muted)",
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
+            borderRadius: "var(--radius-sm)",
+            padding: "var(--space-1) var(--space-2)",
+          }}
+        >
+          BPM —
+        </span>
+      </div>
 
       {/* 소개 카피 — 헤드라인 자리에 단독으로. 시각적 1순위 텍스트.
           골드 그라데이션으로 워드마크와 정체성 묶기. upload 단계 전용. */}
