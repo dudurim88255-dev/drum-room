@@ -3,6 +3,59 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listSongs, deleteSong, type SongMeta } from "@/lib/result-cache";
 
+// 파일명을 시드로 한 결정론적 바 높이 배열. 같은 파일은 항상 같은 모양 —
+// "오디오 파일" 시각 신호를 절제된 톤으로 더하기 위함(랜덤이면 매번 흔들림).
+function seededBarHeights(seed: string, count: number): number[] {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    h ^= h << 13;
+    h ^= h >>> 17;
+    h ^= h << 5;
+    out.push(0.25 + ((h >>> 0) % 1000) / 1000 * 0.75);
+  }
+  return out;
+}
+
+// SVG sparkline — 정적, 모션 없음. 색상은 var(--color-accent-dim).
+function WaveformSparkline({ seed }: { seed: string }) {
+  const bars = 24;
+  const barW = 2;
+  const gap = 1;
+  const width = bars * barW + (bars - 1) * gap; // 71
+  const height = 18;
+  const heights = seededBarHeights(seed, bars);
+  return (
+    <svg
+      width={width}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
+      aria-hidden="true"
+      style={{ flexShrink: 0, display: "block" }}
+    >
+      {heights.map((h, i) => {
+        const bh = Math.max(1, h * height);
+        const y = (height - bh) / 2;
+        const x = i * (barW + gap);
+        return (
+          <rect
+            key={i}
+            x={x}
+            y={y}
+            width={barW}
+            height={bh}
+            fill="var(--color-accent-dim)"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
 // 곡 넣기 화면. 파일을 받으면 다음 단계로 넘긴다. 2차-2: 아래에 "저장된 곡"
 // 목록(있을 때만) — 클릭 시 재분리 없이 즉시 연습, × 로 지우기.
 export default function UploadView({
@@ -181,6 +234,7 @@ export default function UploadView({
                 >
                   {s.name}
                 </button>
+                <WaveformSparkline seed={s.hash || s.name} />
                 <span
                   style={{
                     fontSize: "13px",
