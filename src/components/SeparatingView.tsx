@@ -50,6 +50,14 @@ export default function SeparatingView({
   // StrictMode 이중 마운트 가드: 시작 1회 + 종료 1회 (4-C 교훈).
   const startedRef = useRef(false);
   const doneRef = useRef(false);
+  // 2차-8: 락된 분리 백엔드(진행률 detail 에 "· GPU 가속"/"· CPU 분리" 태그).
+  const accelRef = useRef<"webgpu" | "wasm" | null>(null);
+  const accelTag = () =>
+    accelRef.current === "webgpu"
+      ? " · GPU 가속"
+      : accelRef.current === "wasm"
+        ? " · CPU 분리"
+        : "";
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -122,11 +130,28 @@ export default function SeparatingView({
       const engine = getAudioEngine();
       const { drumsBuffer, backingBuffer } = await separate(pcm, bytes, {
         audioContext: engine.getContext(),
+        // 2차-8: WebGPU 벤치마크/컴파일 동안 "가속 준비 중…" 안내. 락 후 백엔드
+        // 태그 기록. WebGPU 는 첫 청크 컴파일이 끝나(첫 progress) 헤드라인 전환.
+        onStatus: (s) => {
+          if (s.phase === "preparing") {
+            setUi({ headline: "가속 준비 중…", pct: 0, detail: "" });
+          } else if (s.phase === "running") {
+            accelRef.current = s.backend;
+            if (s.backend === "wasm") {
+              setUi({
+                headline: "드럼 분리 중",
+                pct: 0,
+                detail: `세그먼트 0/—${accelTag()}`,
+              });
+            }
+            // webgpu: 첫 청크 컴파일 동안 "가속 준비 중…" 유지(progress 가 전환).
+          }
+        },
         onProgress: (chunk, totalChunks) => {
           setUi({
             headline: "드럼 분리 중",
             pct: Math.round((chunk / totalChunks) * 100),
-            detail: `세그먼트 ${chunk}/${totalChunks}`,
+            detail: `세그먼트 ${chunk}/${totalChunks}${accelTag()}`,
           });
         },
       });

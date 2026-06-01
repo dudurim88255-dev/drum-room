@@ -3,11 +3,12 @@
 > 세션 시작 시 이 파일을 먼저 읽는다. "미검증 가정" 항목은 코드 작업 전 검증한다.
 
 ## ⏸ 세션 종료 — 재개 지점
-- 마지막 커밋: `0f0c123` (2차-7). 1차·2차-1~7 전부 커밋 완료.
-- **배포 점검(Vercel 전): 구현·검증 완료, 미커밋** — 아래 [배포 점검].
-  커밋 게이트: 사용자 확인 후 `chore: Vercel 배포 준비 …`.
-- 다음(사람이 직접): GitHub `dudurim88255-dev/drum-room` 푸시 →
-  Vercel 새 프로젝트 → 레포 연결 → deploy → URL 외부 점검자 공유.
+- 마지막 커밋: `edf1474` (Merge design/main-drum-identity-v1). 1차·2차-1~7 +
+  배포점검(`94f7c9f`) + 헤드라인 재구성(`cdec3e7`) + 메인 정체성(`94d6a4a`)
+  전부 커밋 완료. (배포: `drum-room.vercel.app`.)
+- **2차-8 WebGPU 가속 백엔드 + 공정 벤치마크: 구현 + N95 회귀 발견·수정 완료, 미커밋** —
+  아래 [2차-8]. 커밋 메시지:
+  `perf: 2차-8 - WebGPU 가속 백엔드 추가(자동 폴백, 음질 검증, 공정 벤치마크)`.
 
 ## 현 단계
 - **1차 완성·커밋**: 4-C `151510d`, 4-D `26d01a6`.
@@ -341,6 +342,96 @@
 - 커밋 게이트: 사용자 실앱에서 §4 모든 시나리오 + 한 화면 보존 확인 →
   `feat: 2차-7 - 연습 중 다른 곡으로` 커밋(2차-6 동반 또는 순서대로).
   재현: `change_song_repro.mjs`(gitignore model-prep).
+
+## [2차-8] WebGPU 가속 백엔드 + 공정 벤치마크 (구현·Phase C 가능범위 완료, 미커밋)
+- 목적: 분리 엔진에 WebGPU 백엔드 추가 → 좋은 GPU(외부 점검자 PC)에서 분리
+  속도↑, 약 GPU(N95 등)는 자동 WASM 폴백(회귀 0). 음질 절대 무양보(fp32,
+  양자화 없음, 청크/overlap/postprocess 무변경). 외부 모델 2개 교차검증 반영.
+- **Phase A 승인 + 사용자 보강 2건**: ①WebGPU 락 = (tGpu*MARGIN<tWasm) AND
+  (런타임 MSE≤1e-5) — 헤드리스 불가 환경에서도 락 직전 음질 보장. ②영속화
+  키에 GPU adapter 식별자 포함 → GPU 환경 변화 시 자동 재벤치마크.
+- **자산/버전/import 무변경**: onnxruntime-web 1.26 기본 import 가 이미 jsep
+  빌드(`/ort/ort-wasm-simd-threaded.jsep.{mjs,wasm}`)를 쓰고 jsep 가 WebGPU EP
+  포함 → `executionProviders` 만 분기. ort 업그레이드/자산 추가 없음.
+- **아키텍처(Facade, worker 안)**: 신규 `src/lib/separation-backend.ts` =
+  `SeparationBackend` 인터페이스 + `OrtBackend`(wasm/webgpu) + `createBackend`
+  + `hasWorkerWebGpu`. worker 의 청크 루프는 `session.run` → `backend.inferChunk`
+  로만 교체. **STFT(buildSpec)·ISTFT(spectralWaveform)·가중 OLA(sin² WIN)·
+  정규화·매핑(drums=src0/backing=src1+2+3) 무변경** → WASM 경로 출력은 이전
+  커밋과 비트 동일(구조적 보장).
+- **공정 벤치마크(회귀 수정)**: 초기 버전은 WASM 을 chunk0(멀티스레드 첫
+  청크 워밍업 포함)으로, WebGPU 를 chunk1(워밍업 후 steady)으로 측정해 WASM
+  이 억울하게 느려 보였고, 측정 범위가 `inferChunk` 뿐이라 readback·후처리가
+  빠졌다. **사용자 N95 실측에서 잘못된 WebGPU 락(체감 분리 시간 ↑) 발견** →
+  수정:
+  - **공정 워밍업**: WASM·WebGPU **둘 다** chunk0 워밍업(untimed) → chunk1
+    steady 측정. ORT 런타임(스레드풀/컴파일) 첫 청크 비용 균등 흡수.
+  - **전체 처리 측정**: 측정 구간 = `inferChunk + spectralWaveform(ISTFT) +
+    가중 OLA` 전체. readback·후처리 포함한 실 per-chunk 시간으로 비교.
+    `accumulateChunk` 헬퍼를 runLoop 와 벤치마크가 공유 → 측정 작업량 =
+    분리 작업량.
+  - **보수적 마진 1.3**: 락 = `tGpu * 1.3 < tWasm`(steady) AND `mse ≤ 1e-5`.
+    근소한 우위는 WASM 유지(readback/JS orchestration 변동성 흡수).
+  - **영속화 키 v1→v2 + `bench2-fair-margin1.3` 스탬프**: 잘못 저장된
+    WebGPU 락이 자동 무효화·재벤치마크. 이후 벤치마크 알고리즘 변경 시에도
+    동일하게 자동 무효화.
+- **백엔드 결정 흐름(최종)**:
+  - 메인 thread(`separation-engine.resolveBackend`): `navigator.gpu` 없음/
+    adapter null → WASM. adapter 있으면 `adapter.info`(vendor/architecture/
+    device/description)로 식별자 → 영속화 키 `dr-backend-v2::{adapterId}::
+    ort1.26::htdemucs-v1::bench2-fair-margin1.3`. localStorage 에 저장된
+    결정 있으면 forced 로 전달(벤치마크 스킵).
+  - worker(`separation-worker`): forced 면 그 백엔드(webgpu 생성 throw 시
+    WASM 폴백). forced 없고 webgpu 가용이면 공정 head-to-head — WASM 워밍업
+    chunk0 → WASM steady chunk1(timed full processing) → combWasm 추출 →
+    WebGPU 세션 생성·워밍업 chunk0(combGpu) → WebGPU steady chunk1(timed
+    full processing) → MSE 계산 → 락 결정. 진 쪽 dispose. 벤치마크 1회
+    (영속화)·콘솔 info 로 `metrics{tWasm,tGpu,mse}`.
+  - 메인이 backend 메시지(source benchmark/fallback) 받으면 결정 영속화.
+- **UI**: WebGPU 벤치마크/컴파일 동안 헤드라인 "가속 준비 중…", 락 후
+  진행률 detail 에 "· GPU 가속"/"· CPU 분리"(DESIGN 토큰·앰버 절제). WASM 은
+  바로 "드럼 분리 중 · CPU 분리". 변경: `SeparatingView.tsx`(accelRef+onStatus).
+- **자동 폴백/안전망**: navigator.gpu 없음→WASM, webgpu 세션 throw→WASM,
+  벤치마크 (tGpu*1.3 ≥ tWasm OR MSE 초과)→WASM, **WebGPU 도중 GPU 에러→
+  WASM 곡 단위 재시작**(runLoop 누적버퍼 새로 시작). gpu-error/생성실패 시
+  결정을 WASM 으로 영속화(자가치유; 다음 세션 webgpu 안 탐색 — 안정성 우선,
+  키 삭제로 재탐색).
+- **변경 파일**: `src/lib/separation-backend.ts`(신규), `separation-worker.ts`
+  (백엔드 추상화+공정 벤치마크+accumulateChunk+MSE+재시작), `separation-engine.ts`
+  (resolveBackend+영속화+onStatus+키 v2 스탬프), `SeparatingView.tsx`(가속 UI).
+  그 외 무변경(audio-engine/istft/stft/model-cache/result-cache/metronome/bpm-*).
+- **Phase C 검증 결과**:
+  - ✅ `tsc --noEmit` 0, `eslint src/` 0, `next build` 0(worker 가 새
+    separation-backend import 와 함께 정상 번들; 회귀 수정 후 재실행 0/0/0).
+  - ✅ **WASM 단독 end-to-end(`app_repro.mjs`, --disable-gpu=no-gpu 분기,
+    회귀 수정 전 1회 실행)**: 실제 곡 → 모델 다운로드(200)→jsep wasm 로드→
+    드럼 분리 0→33→67%→연습 화면 도달. **alert 0 · Runtime 예외 0 ·
+    console.error 0 · Network 실패 0 · worker 에러 0.** 회귀 수정 후 WASM
+    비트 동일은 `accumulateChunk` 가 기존 OLA 와 동일 산식이라 구조적 보장
+    (e2e 재실행은 머신 sleep/restart 로 중단, 재실행 안 함 — 구조적 보장
+    충분으로 판단).
+  - ✅ **사용자 N95 실측 게이트(이 커밋의 결정 게이트)**: 사용자가 N95
+    실앱에서 회귀(잘못된 WebGPU 락 → 분리 시간 ↑) 발견·보고 → 공정 벤치마크
+    ·마진 1.3·키 v2 적용 → 사용자 확인 후 본 커밋(N95 = WASM 락 유지가
+    이 커밋의 통과 조건).
+  - ⚠ **WebGPU 경로는 이 N95 환경에서 헤드리스 검증 불가(정직 고지)**:
+    헤드리스 Chrome 이 하드웨어 iGPU·SwiftShader 둘 다 `navigator.gpu` 미노출
+    (메인·worker 양쪽 `hasGpu:false`, `webgpu_probe.mjs`). → WebGPU 벤치마크/
+    MSE/속도/operator 프로파일링은 여기서 실행 자체가 안 됨. **보강 1(런타임
+    MSE 게이트) + 공정 마진 1.3이 외부 점검자 WebGPU 머신에서 락 직전 음질·
+    실속도 우위를 보장** + 사용자 게이트로 처리. operator 프로파일링 훅
+    (`createBackend(...,{profile})` → enableProfiling)은 코드에 있으나 측정은
+    WebGPU 머신 필요(미수행).
+  - ✅ 통합: 2차-2 캐시(백엔드 무관, 같은 결과 키)·헤드라인·crossOriginIsolated
+    영향 없음(app_repro 에서 모델캐시·jsep·worker 정상).
+- 재현: `app_repro.mjs`/`app_repro_freshidb.mjs`(WASM e2e, 후자는 IndexedDB
+  만 비워 worker 재실행 강제), `webgpu_probe.mjs`(WebGPU 가용성 — 둘 다
+  헤드리스 미노출 기록). gitignore model-prep.
+- **다음(외부 점검 머신/사용자)**: WebGPU 가용 PC 에서 (a) "가속 준비 중…"→
+  GPU 락(콘솔 `[drum-room] 분리 백엔드: webgpu {tWasm,tGpu,mse}`)·MSE 통과·
+  속도 향상(공정 마진 1.3 이상), (b) MSE 초과/근소 우위/느림 시 WASM 락
+  (품질·안정성 보호), (c) N95 는 WASM 락 유지 확인. operator 프로파일링은
+  그 머신에서 1회 측정해 이 파일에 기록.
 
 ## [배포 점검] Vercel 배포 전 (구현·검증 완료, 미커밋)
 - 목적: 외부 점검자 접근용 Vercel 배포 전, 빌드·헤더·라이선스·문서·잔재
