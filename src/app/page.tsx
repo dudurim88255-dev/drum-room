@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import UploadView from "@/components/UploadView";
 import SeparatingView, { type SepSource } from "@/components/SeparatingView";
 import PracticeView from "@/components/PracticeView";
 import { checkSupport } from "@/lib/env-support";
+import { getBpmAnalyzer, type BpmState } from "@/lib/bpm-analyzer";
 
 // 단일 페이지 + 세 화면을 stage 로 전환. 4-C: 실제 곡 분리 → 연습.
 // 2차-2: source 는 새 파일 또는 저장된(캐시) 곡 — SeparatingView 가 양쪽 처리.
@@ -30,6 +31,16 @@ export default function Home() {
     getSupportSnapshot,
     () => null as boolean | null,
   );
+
+  // 좌상단 BPM 칩 — PracticeView/메트로놈 패널과 동일 bpm-analyzer 싱글턴을
+  // 구독해 같은 값(자동 감지 + 사용자 보정 ÷2/×2/탭/-/+ 반영)을 표시. 칩은
+  // 연습 화면 + BPM 값이 있을 때(ready 또는 userTouched)만 렌더, 그 외 숨김.
+  const analyzer = getBpmAnalyzer();
+  const [bpmState, setBpmState] = useState<BpmState>(() => analyzer.getState());
+  useEffect(() => analyzer.subscribe(setBpmState), [analyzer]);
+  const showBpmChip =
+    stage === "practice" &&
+    (bpmState.status === "ready" || bpmState.userTouched);
 
   const handleFileSelected = useCallback((picked: File) => {
     setSepError(null);
@@ -82,7 +93,9 @@ export default function Home() {
       }}
     >
       {/* 워드마크 + BPM 메타 — 좌측 상단. 도구/콘솔 정체성.
-          BPM 은 1차에서 정적 dash. 추후 분리 결과에서 감지값 주입 가능. */}
+          BPM 칩은 연습 화면 + bpm-analyzer ready/userTouched 일 때만 렌더
+          (분리 전·분리 중·BPM 값 없음 = 숨김). 값은 PracticeView/메트로놈
+          패널과 동일 싱글턴 구독 → ÷2/×2/탭/-/+ 보정 실시간 반영. */}
       <div
         style={{
           position: "absolute",
@@ -105,24 +118,26 @@ export default function Home() {
         >
           drum.room
         </span>
-        <span
-          aria-label="BPM"
-          style={{
-            fontFamily:
-              "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
-            fontSize: "13px",
-            fontWeight: 500,
-            lineHeight: 1,
-            letterSpacing: "0.02em",
-            color: "var(--color-text-muted)",
-            background: "var(--color-surface)",
-            border: "1px solid var(--color-border)",
-            borderRadius: "var(--radius-sm)",
-            padding: "var(--space-1) var(--space-2)",
-          }}
-        >
-          BPM —
-        </span>
+        {showBpmChip && (
+          <span
+            aria-label={`BPM ${bpmState.bpm}`}
+            style={{
+              fontFamily:
+                "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+              fontSize: "13px",
+              fontWeight: 500,
+              lineHeight: 1,
+              letterSpacing: "0.02em",
+              color: "var(--color-text-muted)",
+              background: "var(--color-surface)",
+              border: "1px solid var(--color-border)",
+              borderRadius: "var(--radius-sm)",
+              padding: "var(--space-1) var(--space-2)",
+            }}
+          >
+            BPM {bpmState.bpm}
+          </span>
+        )}
       </div>
 
       {/* 소개 카피 — 헤드라인 자리에 단독으로. 시각적 1순위 텍스트.
