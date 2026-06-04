@@ -9,7 +9,8 @@ import {
   type PointerEvent as RPointerEvent,
 } from "react";
 import { getAudioEngine } from "@/lib/audio-engine";
-import { getMetronome } from "@/lib/metronome";
+import { getMetronome } from "@/lib/metronome-engine";
+import { loadMetronomePrefs } from "@/lib/metronome-prefs";
 import { getBpmAnalyzer, type BpmState } from "@/lib/bpm-analyzer";
 
 const COUNTIN_PREF_KEY = "drumroom.countIn"; // 전역 사용자 선호(곡 무관)
@@ -71,7 +72,12 @@ export default function PracticeView({
   const metroRef = useRef(getMetronome());
   const [metroOn, setMetroOn] = useState(false);
   const [metroExpanded, setMetroExpanded] = useState(false); // 접이식(기본 접힘)
-  const [metroVol, setMetroVol] = useState(70);
+  // 2차-9 Step 1: 슬라이더 초기값을 영속 prefs 에서 1회 동기화. 엔진 ctor 가
+  // 동일하게 loadMetronomePrefs 로 this.volume 을 채우므로 값 일치 보장.
+  // (useRef.current 접근은 React Compiler 규칙상 render 중 금지 → prefs 직독.)
+  const [metroVol, setMetroVol] = useState(() =>
+    Math.round(loadMetronomePrefs().volume * 100),
+  );
   // 2차-6: BPM/박자/다운비트는 bpm-analyzer 가 단일 진실원천(자동 감지 +
   // 사용자 보정 + 캐시 영구 저장 모두 그쪽). 이 컴포넌트는 구독 + 위임만.
   // 싱글턴이라 매 렌더마다 같은 인스턴스 반환 — ref 불필요(렌더 중 ref 접근
