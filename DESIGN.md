@@ -278,3 +278,90 @@
 - [ ] 연습: 곡 제목 + 재생/정지 버튼 + 드럼 볼륨 슬라이더 + 프리셋 3버튼
 - [ ] 단계 전환은 중앙 같은 자리에서 내용 교체
 - [ ] 모바일/타 브라우저 접속 시 안내 화면
+
+---
+
+## 10. Standalone Metronome — Component Layout (2차-9 Step 3)
+
+§1–9 그대로 따른다. **별도 팔레트·토큰 없음** — 메인 콘솔 `--color-*` 그대로 사용.
+단일 강조 = 앰버(`--color-accent`). 라우트 `/metronome` 별도 전체화면(곡 상태와 무관, L1).
+
+### 정체성
+
+메인 앱(업로드/분리/연습)이 "스튜디오 콘솔"이라면 독립 메트로놈은 **같은 콘솔의
+한 모듈** — 동일 surface 톤, 동일 앰버 강조, 동일 라운드. 두 화면(A 재생 / B 설정)
+같은 카드 폭에서 콘텐츠 교체.
+
+### 세로 악센트 바 (탭 순환 4단)
+
+- 컨테이너: 세로 막대 1개. 폭 `40–56px`, 높이 `120–160px`, radius `var(--radius-lg)`,
+  `background: var(--color-surface-inset)` (=비활성 슬롯 / -1 층위, §6).
+- 채움 높이 = 레벨: `0=음소거 0%` / `1=약 33%` / `2=중 66%` / `3=강 100%`.
+- 채움 색(콘솔 팔레트 안 4단 — **정확값은 화면 보고 보정 가능**):
+  - `3 강` = `var(--color-accent)` (앰버 풀)
+  - `2 중` = `var(--color-accent-dim)` (어두운 앰버 단계)
+  - `1 약` = `var(--color-text-muted)` 또는 `var(--color-border-strong)` (중립 muted)
+  - `0 음소거` = 채움 없음(슬롯만)
+- **현재 박 점등**: 활성 박 동안 box-shadow `var(--shadow-glow)` 잠깐 추가
+  ("지금 살아있는 것" — §6 글로우 규칙 그대로).
+- 탭(클릭): 다음 단계 순환(`3→2→1→0→3`…). 엔진 `setAccents` 호출(다음 마디 swap).
+- 간격: 막대 간 `var(--space-3)`, 그룹 시작 박 앞 `var(--space-4)` (그룹 경계 시각화).
+
+### 12 박자 그리드 (Screen B)
+
+- 3×4 (또는 폭 따라 4×3) 그리드. 셀 = §4 의 **보조 버튼**(pill, radius full).
+- 라벨 = 박자 key (`"1/4" … "6/4"`, `"3/8" … "7/8"`, `"6/8" … "12/8"`).
+- 그룹 캡션(Body Small, `--color-text-muted`): "단순박(4분)" / "단순박(8분)" / "복합박".
+- 선택 상태 = §4 보조 버튼 "선택됨" 스타일 그대로
+  (앰버 보더 + 앰버 텍스트 + `rgba(242,163,60,0.08)` 배경).
+- 셀 간격 `var(--space-3)`.
+
+### BPM 대형 표시 + 템포 마킹
+
+- 숫자: Pretendard `font-size: 96px` (모바일 ≥360px) / `120px` (데스크톱),
+  `font-weight: 700`, `color: var(--color-text)`, `font-variant-numeric: tabular-nums`,
+  `letter-spacing: -0.04em`, `line-height: 1`.
+- 마킹: 숫자 바로 아래, **Body Small** (§3) `color: var(--color-text-muted)`,
+  `letter-spacing: 0.04em`. 룩업: `getState().bpm` → §0 표
+  (40–59 Largo / … / 200–240 Prestissimo). 범위 밖 = 빈 칸.
+
+### 트랜스포트 (재생/일시정지·탭템포·설정)
+
+- 재생/일시정지: §4 의 **1차 액션 버튼** 그대로 — 앰버 풀, 재생 중 둘레 글로우.
+  지름 `≥64px`.
+- 탭템포: §4 **보조 버튼**(pill). 탭 순간 `box-shadow: var(--shadow-glow)` 50ms.
+- 설정(기어): 보조 버튼 동형. 화면 A↔B 전환(클릭 시).
+
+### 화면 A/B 전환
+
+- 상단 두 탭("재생" / "설정") = §4 보조 버튼. 활성 = 보조 버튼 "선택됨".
+- 같은 자리에서 콘텐츠 교체(애니메이션 없음 — calm). 컨테이너 카드 폭 유지.
+
+### 모션
+
+- **현재 박 점등** = `requestAnimationFrame` + `ref` DOM 조작
+  (`element.style.boxShadow` 추가/제거). **클릭당 `setState` 금지**(v2 L6 락).
+  엔진 노출 타이밍 상태 `barStartTime` + `currentSubInterval` + `ctx.currentTime` 로
+  *들리는* 박 인덱스 계산(스케줄러가 ~0.1s 앞서므로 audible 위치로 환산).
+- 그 외 인터랙션은 §4 트랜지션과 동형(120ms/80ms).
+
+### 한 화면 원칙
+
+- 컨테이너 폭 `max-width: 560px` (메인 §5 와 동일 — 콘솔 일관). 모바일 좁은 폭 그대로.
+- 화면 A = 한 viewport 안. 화면 B = 박자 12종 보이려면 스크롤 허용.
+
+### 라우트 진입점
+
+- 메인 페이지 좌상단 워드마크 옆에 작은 텍스트 링크 "메트로놈만"
+  (Caption, `color: var(--color-text-secondary)`, 보더 `1px solid var(--color-border)`,
+  radius `var(--radius-sm)`, padding `--space-1 --space-2`).
+  **앰버 사용 X**(여긴 메인 영역, 살아있는 것만 앰버).
+- `/metronome` 좌상단에 `←` 메인 복귀 링크(동형 스타일).
+
+### 라우트 화면 체크리스트
+
+- [ ] 화면 A: 악센트 바 + BPM 대형 + 마킹 + 트랜스포트 + 탭템포
+- [ ] 화면 B: 세분화 선택기 + 12 박자 그리드 + 박자 수 슬라이더 + 악센트 편집 바
+- [ ] 화면 A/B 전환 = 같은 자리 교체
+- [ ] 현재 박 점등 = rAF + ref (setState 금지)
+- [ ] 메인 진입점 = 워드마크 옆 텍스트 링크
