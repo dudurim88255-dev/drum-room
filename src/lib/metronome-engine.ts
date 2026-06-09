@@ -1,57 +1,76 @@
-// 헤드리스 메트로놈 엔진 — 2차-9 Step 1.
+// 헤드리스 메트로놈 엔진 — 2차-9 Step 1(헤드리스+Two Clocks+풀링) + Step 2(박자 모델).
 //
-// v2 lock 적용:
-// - L1 독립 본체. 상태 소유 = 자기 필드 + metronome-prefs(전역 단일 버전드 객체).
-//   Step 1 prefs 영속 범위 = volume 만. tempo/beats 는 호출자(PracticeView)가
-//   곡 mirror 로 setBpm/setBeatsPerBar 호출(§5 무중단 마이그레이션 경로).
-// - L2 tempo 내부 표준 = 4분음표 BPM. Step 1 시점 meter 4/4 고정 → 표시=내부
-//   (변환 0). Step 2 에서 분모/복합 도입 시 setBpm 입력의 beatUnit→quarter 변환
-//   이 추가될 자리(현재는 1:1 패스스루).
-// - L4 단순 박자 처리(2-7). 강박/약박 2단계. 그룹/세분화/다단계 강세는 Step 2.
-// - L6 N95 방어: lookahead 타이머는 metronome-worker, 메인은 노드 예약만.
-//   클릭음은 OfflineAudioContext 로 기존 osc 합성을 사전 렌더한 AudioBuffer.
-//   박마다 AudioBufferSourceNode 만 새로 만들어 그 버퍼를 가리킴 → 매 클릭마다
-//   Oscillator+Gain 노드 2개 신규 생성하던 GC 부담 제거(버퍼 자체는 영속 1개씩).
+// Step 1 lock 유지:
+// - L1 헤드리스 본체 / L6 Two Clocks Worker 타이머 + 비주얼 분리 + 클릭 풀링.
+// - 클릭음: OfflineAudioContext 사전 렌더 AudioBuffer, 박마다 AudioBufferSourceNode.
+// - prefs(version, volume) 영속, 다른 필드는 Step 3.
 //
-// 기존 metronome.ts 와의 외부 호환: getMetronome() 시그니처/메서드 명·인자 1:1,
-// playCountIn 시그니처 1:1 (호출자 PracticeView 무변경).
+// Step 2 추가(라이브 PracticeView 호출 0 = 휴면 — §5 곡-미러 유지):
+// - L4 박자 모델 = metronome-grid PRESET_TABLE(12종) + grouping[] + accents[] + subdivision.
+// - L3 펄스 격자 스케줄: t = barStartTime + tickIdxInBar × currentSubInterval
+//   (multiplicative, 누적합 아님 — Phase A 주의 A). sample-round = round(t×SR)/SR.
+// - 정밀 스펙 #2 setMeter/setSubdivision/setAccents 는 **다음 마디 경계 적용**(pending swap).
+//   setBpm/setBeatsPerBar 는 **즉시 적용**(라이브 회귀 보호 — Phase A 주의 §5).
+// - Cautionary C: 바 advance = 현재 바의 (currentTicksPerBar × currentSubInterval).
+//   교체가 일어나도 현재 바는 옛 길이로 끝남.
+//
+// 4/4 회귀 보장(G1): 기본 상태(meter=4/4 simple-quarter, subdivision=1,
+// accents=[3,2,2,2]) → strong/mid/mid/mid 패턴이 Step 1 의 accent/beat 와 비트 동일
+// (accentBuf/beatBuf 버퍼 그대로 재사용). 신규 weak/softest 버퍼는 4/4 기본 경로에서
+// 미사용.
 import { getAudioEngine } from "./audio-engine";
 import {
   loadMetronomePrefs,
   saveMetronomePrefs,
 } from "./metronome-prefs";
+import {
+  PRESET_TABLE,
+  baseUnitDurSec,
+  displayBpmToQuarter,
+  defaultAccents,
+  makeSimpleQuarterPreset,
+  pulseKindAt,
+  ticksPerBar as ticksPerBarOf,
+  type AccentLevel,
+  type MeterPreset,
+  type PulseKind,
+} from "./metronome-grid";
 
-const LOOKAHEAD_MS = 25; // 스케줄러 점검 주기 (worker setInterval)
-const SCHEDULE_AHEAD = 0.1; // 이 시간(초) 안에 올 박을 미리 예약
-const ACCENT_HZ = 1500; // 강박(마디 첫 박)
-const BEAT_HZ = 900; // 약박
-const MAX_GAIN = 0.9; // 볼륨 100% 매핑(클리핑 회피)
+const LOOKAHEAD_MS = 25;
+const SCHEDULE_AHEAD = 0.1;
 
-// 클릭음 합성 파라미터 — 기존 metronome.ts 의 scheduleClick 와 비트 동일.
-// 변경 시 OfflineAudioContext 렌더 결과가 달라져 회귀 발생 — 손대지 말 것.
-const CLICK_DURATION = 0.05; // osc.start(t); osc.stop(t+0.05)
-const ATTACK = 0.001; // linearRamp 1ms 어택
-const RELEASE = 0.04; // exponentialRamp 40ms 감쇠 종점
+// 클릭음 합성 파라미터 — Step 1 scheduleClick 와 비트 동일.
+// 변경 시 OfflineAudioContext 렌더 결과 변동 → 회귀 — 손대지 말 것.
+const CLICK_DURATION = 0.05;
+const ATTACK = 0.001;
+const RELEASE = 0.04;
+
+// 레벨별 음색(주파수·게인 정점). Step 1 strong/mid 는 기존 1500/900Hz, 게인 1.0 그대로
+// → 4/4 회귀 버퍼 비트 동일 보장. weak/softest 는 Step 2 신규(임시값 — Step 3 청취 튜닝).
+const ACCENT_HZ = 1500; // strong (Step 1 accent)
+const BEAT_HZ = 900; // mid (Step 1 beat)
+const WEAK_HZ = 600; // weak (신규)
+const SOFTEST_HZ = 400; // softest (신규)
+const MAX_GAIN = 0.9;
 
 /**
- * 기존 osc 클릭과 음색 비트 동일한 AudioBuffer 를 OfflineAudioContext 로 렌더.
- * 같은 triangle osc + 같은 gain envelope. 임의 샘플 없음.
- * @param sampleRate 라이브 AudioContext 와 동일 SR(미일치 시 피치 변동)
- * @param accent true → ACCENT_HZ(1500), false → BEAT_HZ(900)
+ * OfflineAudioContext 사전 렌더 — Step 1 의 osc 클릭 합성과 비트 동일.
+ * (freq=1500/gainScale=1.0)·(freq=900/gainScale=1.0) 호출은 Step 1 accent/beat 와 동일 버퍼.
  */
 async function renderClick(
   sampleRate: number,
-  accent: boolean,
+  freq: number,
+  gainScale: number,
 ): Promise<AudioBuffer> {
   const len = Math.max(1, Math.ceil(CLICK_DURATION * sampleRate));
   const offline = new OfflineAudioContext(1, len, sampleRate);
   const osc = offline.createOscillator();
   const g = offline.createGain();
   osc.type = "triangle";
-  osc.frequency.value = accent ? ACCENT_HZ : BEAT_HZ;
-  // 기존 scheduleClick 의 envelope 와 동일 (offline 기준 t=0 으로 평행이동)
+  osc.frequency.value = freq;
   g.gain.setValueAtTime(0, 0);
-  g.gain.linearRampToValueAtTime(1, ATTACK);
+  g.gain.linearRampToValueAtTime(gainScale, ATTACK);
+  // exponentialRamp 양수 종점 필요 — Step 1 동일 0.0001(=-80dB) 무음 근사.
   g.gain.exponentialRampToValueAtTime(0.0001, RELEASE);
   osc.connect(g);
   g.connect(offline.destination);
@@ -61,75 +80,132 @@ async function renderClick(
 }
 
 class MetronomeEngine {
-  // 오디오 노드 (lazy init — getAudioEngine 컨텍스트가 준비된 시점에)
+  // 오디오 노드 (lazy init)
   private ctx: AudioContext | null = null;
   private out: GainNode | null = null;
-  private accentBuf: AudioBuffer | null = null;
-  private beatBuf: AudioBuffer | null = null;
-  private bufferInit: Promise<void> | null = null; // ensureNodes 중복 호출 가드
+  private accentBuf: AudioBuffer | null = null; // level 3 strong — Step 1 accent 동일
+  private beatBuf: AudioBuffer | null = null; // level 2 mid — Step 1 beat 동일
+  private weakBuf: AudioBuffer | null = null; // level 1 weak — Step 2 신규
+  private softestBuf: AudioBuffer | null = null; // sub-tick — Step 2 신규
+  private bufferInit: Promise<void> | null = null;
 
   // 사용자 보이는 상태
   private running = false;
-  private quarterBpm = 120; // 내부 4분음표 BPM (Step 1: meter 4/4 → display=quarter)
-  private beatsPerBar = 4;
+  private displayBpm = 120; // 사용자 표시 BPM (1차 저장)
+  private quarterBpm = 120; // 내부 4분음표 BPM = displayBpmToQuarter(displayBpm, type)
   private volume = 0.7;
 
-  // 스케줄러 상태
+  // 박자 모델 (Step 2). 기본 = 4/4 simple-quarter, subdivision=1, accents=[3,2,2,2].
+  // → 4/4 기본 펄스 = strong/mid/mid/mid 로 Step 1 비트 동일.
+  private meterPreset: MeterPreset = PRESET_TABLE["4/4"];
+  private subdivision = 1;
+  private accents: AccentLevel[] = [3, 2, 2, 2];
+
+  // pending swap (다음 마디 경계에 적용 — setMeter/setSubdivision/setAccents 만).
+  // setBpm/setBeatsPerBar 는 즉시 적용(라이브 회귀 보호 — 주의 §5).
+  private pendingMeter: MeterPreset | null = null;
+  private pendingSubdivision: number | null = null;
+  private pendingAccents: AccentLevel[] | null = null;
+
+  // 스케줄러 상태 — bar-anchor + tickIdxInBar (Step 2 주의 A·C)
   private worker: Worker | null = null;
-  private nextNoteTime = 0;
-  private beatInBar = 0;
+  private barStartTime = 0; // 현재 바 시작 시각(ctx 기준 sec)
+  private tickIdxInBar = 0; // 0..currentTicksPerBar-1
+  // 캐시(setBpm/setBeatsPerBar/swap 마다 갱신)
+  private currentSubInterval = 60 / 120; // = baseUnitDurSec(type, q) / subdivision
+  private currentTicksPerBar = 4; // = baseCount × subdivision
 
   constructor() {
-    // 영속 prefs 로드 — Step 1 범위 = volume 만
     const prefs = loadMetronomePrefs();
     this.volume = prefs.volume;
+    this.refreshBarParams();
   }
 
-  /** AudioContext/GainNode/클릭 버퍼 lazy init. 멀티 호출 안전(같은 Promise 반환). */
+  /** 캐시(currentSubInterval, currentTicksPerBar) 를 현재 meter/sub/q 로 갱신. */
+  private refreshBarParams(): void {
+    this.currentSubInterval =
+      baseUnitDurSec(this.meterPreset.type, this.quarterBpm) / this.subdivision;
+    this.currentTicksPerBar = ticksPerBarOf(this.meterPreset, this.subdivision);
+  }
+
+  /** 바 경계에서 호출 — pending 값을 활성 상태로 옮기고 캐시 갱신. */
+  private applyPendingSwap(): void {
+    if (this.pendingMeter) {
+      this.meterPreset = this.pendingMeter;
+      this.pendingMeter = null;
+      // type 변경 시 q 재계산(표시 숫자 유지, 정밀 스펙 A2)
+      this.quarterBpm = displayBpmToQuarter(
+        this.displayBpm,
+        this.meterPreset.type,
+      );
+    }
+    if (this.pendingSubdivision !== null) {
+      this.subdivision = this.pendingSubdivision;
+      this.pendingSubdivision = null;
+    }
+    if (this.pendingAccents) {
+      this.accents = this.pendingAccents;
+      this.pendingAccents = null;
+    }
+    this.refreshBarParams();
+  }
+
   private ensureNodes(): Promise<void> {
-    if (this.ctx && this.accentBuf && this.beatBuf) return Promise.resolve();
+    if (
+      this.ctx &&
+      this.accentBuf &&
+      this.beatBuf &&
+      this.weakBuf &&
+      this.softestBuf
+    )
+      return Promise.resolve();
     if (this.bufferInit) return this.bufferInit;
     this.bufferInit = (async () => {
       const ctx = getAudioEngine().getContext();
       const out = ctx.createGain();
       out.gain.value = this.volume * MAX_GAIN;
       out.connect(ctx.destination);
-      const [accentBuf, beatBuf] = await Promise.all([
-        renderClick(ctx.sampleRate, true),
-        renderClick(ctx.sampleRate, false),
+      // 4 버퍼 사전 렌더(병렬). Step 1 accent/beat 합성식 그대로(=비트 동일).
+      const [accentBuf, beatBuf, weakBuf, softestBuf] = await Promise.all([
+        renderClick(ctx.sampleRate, ACCENT_HZ, 1.0),
+        renderClick(ctx.sampleRate, BEAT_HZ, 1.0),
+        renderClick(ctx.sampleRate, WEAK_HZ, 0.6),
+        renderClick(ctx.sampleRate, SOFTEST_HZ, 0.4),
       ]);
       this.ctx = ctx;
       this.out = out;
       this.accentBuf = accentBuf;
       this.beatBuf = beatBuf;
+      this.weakBuf = weakBuf;
+      this.softestBuf = softestBuf;
     })();
     return this.bufferInit;
   }
 
-  /** 메인 스레드 스케줄러 — worker tick 받아 호출 (또는 start() 첫 호출 즉시). */
-  private scheduler = (): void => {
-    if (!this.running || !this.ctx || !this.accentBuf || !this.beatBuf) return;
-    const ctx = this.ctx;
-    while (this.nextNoteTime < ctx.currentTime + SCHEDULE_AHEAD) {
-      this.scheduleClick(this.nextNoteTime, this.beatInBar === 0);
-      this.nextNoteTime += 60 / this.quarterBpm;
-      this.beatInBar = (this.beatInBar + 1) % this.beatsPerBar;
+  private bufferForKind(kind: PulseKind): AudioBuffer | null {
+    switch (kind) {
+      case "strong":
+        return this.accentBuf;
+      case "mid":
+        return this.beatBuf;
+      case "weak":
+        return this.weakBuf;
+      case "softest":
+        return this.softestBuf;
+      case "mute":
+        return null;
     }
-  };
+  }
 
-  /**
-   * 한 박 클릭을 정확한 시각에 예약.
-   * AudioBufferSourceNode 1개 생성(노드 자체 재사용 불가 — 한번 start 후 폐기),
-   * 가리키는 AudioBuffer 는 풀(accentBuf/beatBuf) → 무거운 osc/gain 신규 생성 회피.
-   */
-  private scheduleClick(time: number, accent: boolean): void {
+  private scheduleClickAt(time: number, kind: PulseKind): void {
+    if (kind === "mute") return;
+    const buf = this.bufferForKind(kind);
+    if (!buf) return;
     const ctx = this.ctx!;
-    const buf = accent ? this.accentBuf! : this.beatBuf!;
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(this.out!);
     src.start(time);
-    // 끝나면 즉시 disconnect — GC 회수 빠르게
     src.onended = () => {
       try {
         src.disconnect();
@@ -138,6 +214,50 @@ class MetronomeEngine {
       }
     };
   }
+
+  /**
+   * Step 2 스케줄러 — Worker tick(또는 start 직후 즉시 1회) 시 호출.
+   *
+   * t 계산: tRaw = barStartTime + tickIdxInBar × currentSubInterval (주의 A, multiplicative).
+   *        tRounded = round(tRaw × SR) / SR (정수 샘플 정책).
+   * 바 경계: tickIdxInBar >= currentTicksPerBar →
+   *   barStartTime += currentTicksPerBar × currentSubInterval (=현재 바 meter 길이, 주의 C)
+   *   tickIdxInBar = 0; applyPendingSwap() (주의 B).
+   * kind 결정: pulseKindAt(tickIdxInBar, meterPreset, subdivision, accents) — 순수 함수.
+   */
+  private scheduler = (): void => {
+    if (
+      !this.running ||
+      !this.ctx ||
+      !this.accentBuf ||
+      !this.beatBuf ||
+      !this.weakBuf ||
+      !this.softestBuf
+    )
+      return;
+    const ctx = this.ctx;
+    const SR = ctx.sampleRate;
+    while (true) {
+      // 바 경계 — 옛 바 길이로 advance 후 pending swap (주의 B·C)
+      if (this.tickIdxInBar >= this.currentTicksPerBar) {
+        this.barStartTime += this.currentTicksPerBar * this.currentSubInterval;
+        this.tickIdxInBar = 0;
+        this.applyPendingSwap();
+      }
+      const tRaw =
+        this.barStartTime + this.tickIdxInBar * this.currentSubInterval;
+      const tRounded = Math.round(tRaw * SR) / SR;
+      if (tRounded >= ctx.currentTime + SCHEDULE_AHEAD) break;
+      const kind = pulseKindAt(
+        this.tickIdxInBar,
+        this.meterPreset,
+        this.subdivision,
+        this.accents,
+      );
+      this.scheduleClickAt(tRounded, kind);
+      this.tickIdxInBar++;
+    }
+  };
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
@@ -157,14 +277,14 @@ class MetronomeEngine {
     const ctx = this.ctx!;
     if (ctx.state === "suspended") await ctx.resume();
     this.running = true;
-    this.beatInBar = 0;
-    this.nextNoteTime = ctx.currentTime + 0.05;
+    this.barStartTime = ctx.currentTime + 0.05;
+    this.tickIdxInBar = 0;
+    this.refreshBarParams();
     this.ensureWorker().postMessage({
       type: "start",
       intervalMs: LOOKAHEAD_MS,
     });
-    // 첫 tick 까지 ≤25ms 지연이 있을 수 있어 즉시 한 번 실행 → 첫 클릭(+0.05s)이
-    // SCHEDULE_AHEAD 창 안에 확실히 들어가게 한다(=현 metronome.ts 와 동일 첫 박 동작).
+    // 첫 tick(≤25ms 후)까지 지연을 피해 즉시 1회 실행 — Step 1 동일.
     this.scheduler();
   }
 
@@ -172,38 +292,77 @@ class MetronomeEngine {
     if (!this.running) return;
     this.running = false;
     this.worker?.postMessage({ type: "stop" });
-    // 이미 예약된(≤0.1s) 클릭은 그대로 끝남 — 무해(기존 동작과 동일).
+    // 이미 예약된(≤0.1s) 클릭은 그대로 끝남 — Step 1 동일.
   }
 
   /**
-   * 메트로놈이 사용하는 BPM(표시값). Step 1 시점 meter 4/4 고정 → 표시 == 4분 BPM
-   * (변환 0). Step 2 에서 분모/복합 도입 시 이 메서드 입력의 beatUnit → quarter
-   * 변환이 추가될 단일 지점.
+   * 표시 BPM 설정 (즉시 적용 — 라이브 회귀 보호).
+   * subInterval 이 바뀌면 다음 tick 시각이 변하므로 barStartTime 을 시프트해
+   * Step 1 의 nextNoteTime(=마지막 스케줄+oldInterval) 와 동일한 다음-tick 시각 보존.
+   *   목표: barStartTime_new + tickIdxInBar × newSubInterval = barStartTime_old + tickIdxInBar × oldSubInterval
+   *   ∴ barStartTime_new = barStartTime_old + tickIdxInBar × (oldSubInterval - newSubInterval)
    */
   setBpm(displayBpm: number): void {
-    this.quarterBpm = Math.min(240, Math.max(40, Math.round(displayBpm)));
+    const v = Math.min(240, Math.max(40, Math.round(displayBpm)));
+    this.displayBpm = v;
+    const oldSubInterval = this.currentSubInterval;
+    this.quarterBpm = displayBpmToQuarter(v, this.meterPreset.type);
+    this.currentSubInterval =
+      baseUnitDurSec(this.meterPreset.type, this.quarterBpm) / this.subdivision;
+    if (this.running) {
+      const shift =
+        this.tickIdxInBar * (oldSubInterval - this.currentSubInterval);
+      this.barStartTime += shift;
+    }
   }
+
+  /**
+   * 박자 수 즉시 적용 (레거시 라이브 API). 내부적으로 simple-quarter 박자 변경.
+   * Step 1 동작 보존: 다음 마디 대기 없이 즉시 다음 tick 부터 새 패턴.
+   * subInterval 은 unchanged (simple-quarter, 같은 q, 같은 subdivision) →
+   * barStartTime 시프트 불필요. 단 tickIdxInBar 가 새 tpb 보다 크면 바 경계가 자연 트리거.
+   */
   setBeatsPerBar(n: number): void {
-    this.beatsPerBar = Math.min(7, Math.max(2, Math.round(n)));
+    const v = Math.min(7, Math.max(2, Math.round(n)));
+    // 7/4 는 시각 스펙 12 프리셋 밖이라 PRESET_TABLE 미수록 — 동적 구성으로 어떤
+    // v∈[2,7] 도 안전(silent fallback 회피, 옛 [2,7] API 시그니처 1:1 보존).
+    const newPreset = makeSimpleQuarterPreset(v);
+    this.meterPreset = newPreset;
+    this.accents = defaultAccents(newPreset);
+    // subdivision 유지. simple-quarter 라 q·subInterval 변화 없음.
+    this.currentTicksPerBar = ticksPerBarOf(newPreset, this.subdivision);
   }
+
   setVolume(v01: number): void {
     this.volume = Math.min(1, Math.max(0, v01));
     if (this.out) this.out.gain.value = this.volume * MAX_GAIN;
-    // 영속 prefs 즉시 저장(Step 1 범위 = volume).
     saveMetronomePrefs({ version: 1, volume: this.volume });
   }
 
+  // ── 신규 API (Step 2, PracticeView 호출 0 = 휴면, 단위 테스트만) ──────────
+  /** 박자 교체 — 다음 마디 경계 적용(주의 B). 표시 BPM 유지, q 재계산. */
+  setMeter(presetKey: string): void {
+    const preset = PRESET_TABLE[presetKey];
+    if (!preset) return;
+    this.pendingMeter = preset;
+    // 새 박자에 맞는 기본 강세도 pending (사용자가 setAccents 로 즉시 덮어쓰면 그대로).
+    if (this.pendingAccents === null) {
+      this.pendingAccents = defaultAccents(preset);
+    }
+  }
+  /** 세분화 — 다음 마디 경계 적용. */
+  setSubdivision(s: number): void {
+    this.pendingSubdivision = Math.max(1, Math.floor(s));
+  }
+  /** 강세 — 다음 마디 경계 적용. */
+  setAccents(arr: readonly AccentLevel[]): void {
+    this.pendingAccents = [...arr];
+  }
+
   /**
-   * 카운트인 — 본체 start/stop 과 독립 트리거. 시그니처 = 기존 metronome.ts 그대로
-   * (PracticeView 호출 무영향). 곡 정렬은 곡 쪽 책임 — 이 메서드는 클릭만 예약.
-   *
-   * ensureNodes 가 async 라 첫 호출 race 가능성: cancel 반환은 동기, 실제 예약은
-   * ensureNodes 완료 후 진행. 호출자(PracticeView)는 cancel 핸들만 즉시 잡고
-   * onDone 은 예약된 곡 시작 시각에 발화 — 첫 호출이 ensureNodes(<1ms) 대기로
-   * 살짝 늦어도 onDone 의 songStart 시각이 ctx.currentTime 기반으로 계산되어
-   * 정렬 정확성은 유지.
-   *
-   * @returns cancel(): 미발화 클릭 stop + onDone 발화 차단.
+   * 카운트인 — Step 1 시그니처 1:1 보존. 인자 bpm/beatsPerBar 그대로 사용.
+   * 음색: 강박(1500Hz)·약박(900Hz) 만 — Step 1 동일(weak/softest 미사용).
+   * sample-round 정수 샘플 정책 일관 적용.
    */
   playCountIn(opts: {
     bpm: number;
@@ -218,13 +377,15 @@ class MetronomeEngine {
       await this.ensureNodes();
       if (cancelled) return;
       const ctx = this.ctx!;
+      const SR = ctx.sampleRate;
       const P = 60 / Math.min(240, Math.max(40, opts.bpm));
       const beats =
         Math.max(1, opts.bars) *
         Math.min(7, Math.max(2, opts.beatsPerBar));
-      const t0 = ctx.currentTime + 0.1; // 첫 클릭 살짝 미래에서 시작(스케줄 여유)
+      const t0 = ctx.currentTime + 0.1;
       for (let i = 0; i < beats; i++) {
-        const t = t0 + i * P;
+        const tRaw = t0 + i * P;
+        const t = Math.round(tRaw * SR) / SR;
         const accent = i % opts.beatsPerBar === 0;
         const src = ctx.createBufferSource();
         src.buffer = accent ? this.accentBuf! : this.beatBuf!;
@@ -239,7 +400,7 @@ class MetronomeEngine {
         };
         sources.push(src);
       }
-      const songStart = t0 + beats * P; // 마지막 박의 다음 박 = 곡 1박
+      const songStart = t0 + beats * P;
       const leadSec = Math.max(0, songStart - ctx.currentTime - 0.05);
       timer = setTimeout(() => {
         if (cancelled) return;
@@ -255,7 +416,7 @@ class MetronomeEngine {
           const now = this.ctx.currentTime;
           for (const s of sources) {
             try {
-              s.stop(now); // 아직 안 울린 클릭 무력화(이미 끝난 건 무시)
+              s.stop(now);
             } catch {
               /* 이미 끝남 — 무시 */
             }
@@ -276,8 +437,9 @@ class MetronomeEngine {
   } {
     return {
       running: this.running,
-      bpm: this.quarterBpm, // Step 1: meter 4/4 → display == quarter
-      beatsPerBar: this.beatsPerBar,
+      bpm: this.displayBpm,
+      // 라이브는 simple-quarter 만 사용 → numerator = 사용자 인지 박자 수.
+      beatsPerBar: this.meterPreset.numerator,
       volume: this.volume,
     };
   }
@@ -285,7 +447,7 @@ class MetronomeEngine {
 
 let singleton: MetronomeEngine | null = null;
 
-/** 앱 전체 단일 메트로놈 — 기존 metronome.ts 의 getMetronome 시그니처 호환. */
+/** 앱 전체 단일 메트로놈 — Step 1 의 getMetronome 시그니처 호환. */
 export function getMetronome(): MetronomeEngine {
   if (!singleton) singleton = new MetronomeEngine();
   return singleton;
